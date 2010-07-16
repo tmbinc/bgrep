@@ -1,0 +1,5 @@
+I'm terribly annoyed by the fact that grep(1) cannot look for binary
+strings. I'm even more annoyed by the fact that a simple search for 
+"binary grep" doesn't yield a tool which could do that. So I wrote one.
+
+Feel free to modify, branch, fork, improve. Re-licenses as BSD.
