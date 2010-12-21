@@ -56,12 +56,15 @@ void searchfile(const char *filename, int fd, const unsigned char *value, const 
 {
 	off_t offset = 0;
 	unsigned char buf[1024];
+
+	len--;
+
 	while (1)
 	{
 		int r;
 
-		memcpy(buf, buf + len, len);
-		r = read(fd, buf + len, 1024 - len);
+		memmove(buf, buf + sizeof(buf) - len, len);
+		r = read(fd, buf + len, sizeof(buf) - len);
 
 		if (r < 0)
 		{
@@ -71,12 +74,12 @@ void searchfile(const char *filename, int fd, const unsigned char *value, const 
 			return;
 		
 		int o, i;
-		for (o = offset ? len : 0; o < r - len + 1; ++o)
+		for (o = offset ? 0 : len; o < r; ++o)
 		{
-			for (i = 0; i < len; ++i)
+			for (i = 0; i <= len; ++i)
 				if ((buf[o + i] & mask[i]) != value[i])
 					break;
-			if (i == len)
+			if (i > len)
 			{
 				printf("%s: %08llx\n", filename, (unsigned long long)(offset + o - len));
 			}
