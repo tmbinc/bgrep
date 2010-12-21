@@ -152,7 +152,10 @@ int main(int argc, char **argv)
 			value[len] = mask[len] = 0;
 			len++;
 			h += 2;
-		} else 
+		} else if (h[0] == ' ')
+		{
+			h++;
+		} else
 		{
 			int v0 = ascii2hex(*h++);
 			int v1 = ascii2hex(*h++);
