@@ -34,6 +34,8 @@
 #include <unistd.h>
 #include <sys/stat.h>
 
+#define BGREP_VERSION "0.2"
+
 int ascii2hex(char c)
 {
 	if (c < '0')
@@ -140,6 +142,7 @@ int main(int argc, char **argv)
 	
 	if (argc < 2)
 	{
+		fprintf(stderr, "bgrep version: %s\n", BGREP_VERSION);
 		fprintf(stderr, "usage: %s <hex> [<path> [...]]\n", *argv);
 		return 1;
 	}
