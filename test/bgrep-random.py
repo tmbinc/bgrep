@@ -20,7 +20,7 @@ def test_bgrep(datalen, searchlen):
 	
 	bgrep_res = subprocess.Popen([BGREP, search.encode('hex'), filename], stdout=subprocess.PIPE).communicate()[0]
 	
-	expected_res = ''.join(["%s: %08x\n" % (filename, i) for i in results])
+	expected_res = ''.join(["%s: %016x\n" % (filename, i) for i in results])
 	
 	if bgrep_res != expected_res:
 		print "search: %s" % search.encode('hex')
