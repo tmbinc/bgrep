@@ -1,4 +1,6 @@
 // Copyright 2009 Felix Domke <tmbinc@elitedvb.net>. All rights reserved.
+// Copyright 2014 Jirka Hladky <hladky.jiri@gmail.com>. 
+// Added support for large files (previously 4GB, now 2^64 bytes, 16EiB Exbibytes)
 // 
 // Redistribution and use in source and binary forms, with or without modification, are
 // permitted provided that the following conditions are met:
@@ -24,6 +26,9 @@
 // authors and should not be interpreted as representing official policies, either expressed
 // or implied, of the copyright holder.
 //
+/*
+gcc -Wall -Wextra -O2 -o bgrep bgrep.c
+*/
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -33,8 +38,9 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <inttypes.h>
 
-#define BGREP_VERSION "0.2"
+#define BGREP_VERSION "0.3"
 
 int ascii2hex(char c)
 {
@@ -56,7 +62,7 @@ int ascii2hex(char c)
 
 void searchfile(const char *filename, int fd, const unsigned char *value, const unsigned char *mask, int len)
 {
-	off_t offset = 0;
+	uint64_t offset = 0;
 	unsigned char buf[1024];
 
 	len--;
@@ -75,15 +81,16 @@ void searchfile(const char *filename, int fd, const unsigned char *value, const 
 		} else if (!r)
 			return;
 		
-		int o, i;
-		for (o = offset ? 0 : len; o < r; ++o)
+		int i;
+    uint64_t o;
+		for (o = offset ? 0 : len; o < (unsigned) r; ++o)
 		{
 			for (i = 0; i <= len; ++i)
 				if ((buf[o + i] & mask[i]) != value[i])
 					break;
 			if (i > len)
 			{
-				printf("%s: %08llx\n", filename, (unsigned long long)(offset + o - len));
+				printf("%s: %016" PRIx64 "\n", filename, (uint64_t)(offset + o - len));
 			}
 		}
 		

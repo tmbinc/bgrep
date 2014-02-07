@@ -19,7 +19,7 @@ if [ $PREPARE -eq 1 ]; then
  for index in `seq 0 1025`;do
   fileIndex=`printf "%04i" ${index}`
   perl -e 'print "A"x'"${index}"';print "BBBC";print "A"x20;' > /tmp/bgrepTest${fileIndex}.txt
-  printf "%08x\n" ${index} >> /tmp/bgrepExpectedResult.txt
+  printf "%016x\n" ${index} >> /tmp/bgrepExpectedResult.txt
  done
 
  #
@@ -28,7 +28,7 @@ if [ $PREPARE -eq 1 ]; then
  #
  for index in `seq 1020 1025`;do
   perl -e 'print "A"x'"${index}"';print "BBB"' > /tmp/bgrepTestSpecial${index}.txt
-  printf "%08x\n" ${index} >> /tmp/bgrepExpectedResult.txt
+  printf "%016x\n" ${index} >> /tmp/bgrepExpectedResult.txt
  done
 
 fi
