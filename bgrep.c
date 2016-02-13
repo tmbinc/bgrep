@@ -39,6 +39,13 @@
 
 #define BGREP_VERSION "0.2"
 
+// The Windows/DOS implementation of read(3) opens files in text mode by default,
+// which means that an 0x1A byte is considered the end of the file unless a non-standard
+// flag is used. Make sure it's defined even on real POSIX environments
+#ifndef O_BINARY
+#define O_BINARY 0
+#endif
+
 int bytes_before = 0, bytes_after = 0;
 
 void die(const char* msg, ...);
@@ -175,7 +182,7 @@ void recurse(const char *path, const unsigned char *value, const unsigned char *
 	}
 	if (!S_ISDIR(s.st_mode))
 	{
-		int fd = open(path, O_RDONLY);
+		int fd = open(path, O_RDONLY | O_BINARY);
 		if (fd < 0)
 			perror(path);
 		else
