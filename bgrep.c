@@ -111,7 +111,7 @@ void dump_context(int fd, unsigned long long pos)
 			die("Error reading context");
 		}
 
-		char* buf_end = buf + read_chunk;
+		char* buf_end = buf + bytes_read;
 		char* p = buf;
 
 		for (; p < buf_end;p++)
