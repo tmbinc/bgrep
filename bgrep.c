@@ -38,6 +38,7 @@
 #include <stdarg.h>
 
 #define BGREP_VERSION "0.2"
+#define _FILE_OFFSET_BITS 64
 
 // The Windows/DOS implementation of read(3) opens files in text mode by default,
 // which means that an 0x1A byte is considered the end of the file unless a non-standard
@@ -82,7 +83,7 @@ int ascii2hex(char c)
  */
 void dump_context(int fd, unsigned long long pos)
 {
-	off_t save_pos = lseek(fd, 0, SEEK_CUR);
+       off_t save_pos = lseek(fd, (off_t)0, SEEK_CUR);
 
 	if (save_pos == (off_t)-1)
 	{
@@ -123,6 +124,7 @@ void dump_context(int fd, unsigned long long pos)
 	}
 
 	putchar('\n');
+       fflush(stdout);
 
 	if (lseek(fd, save_pos, SEEK_SET) == (off_t)-1)
 	{
@@ -135,21 +137,25 @@ void searchfile(const char *filename, int fd, const unsigned char *value, const 
 {
 	off_t offset = 0;
 	unsigned char buf[1024];
+       int r=0;
 
 	len--;
 
 	while (1)
 	{
-		int r;
 
-		memmove(buf, buf + sizeof(buf) - len, len);
-		r = read(fd, buf + len, sizeof(buf) - len);
+               memmove(buf, buf + len + r - len, len);
+               r=0;
+               int ret=1;
+               while(ret>0&&r<len)
+                       r += ret = read(fd, buf + len +r, sizeof(buf) - len-0);
 
-		if (r < 0)
+               if (ret < 0)
 		{
 			perror("read");
 			return;
-		} else if (!r)
+               }
+               if (!r)
 			return;
 
 		int o, i;
@@ -162,6 +168,7 @@ void searchfile(const char *filename, int fd, const unsigned char *value, const 
 			{
 				unsigned long long pos = (unsigned long long)(offset + o - len);
 				printf("%s: %08llx\n", filename, pos);
+				fflush(stdout);
 				if (bytes_before || bytes_after)
 					dump_context(fd, pos);
 			}
