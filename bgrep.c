@@ -25,6 +25,7 @@
 // or implied, of the copyright holder.
 //
 
+#define _FILE_OFFSET_BITS 64
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -38,7 +39,6 @@
 #include <stdarg.h>
 
 #define BGREP_VERSION "0.2"
-#define _FILE_OFFSET_BITS 64
 
 // The Windows/DOS implementation of read(3) opens files in text mode by default,
 // which means that an 0x1A byte is considered the end of the file unless a non-standard
