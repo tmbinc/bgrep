@@ -7,3 +7,11 @@ Feel free to modify, branch, fork, improve. Re-licenses as BSD.
 To install:
 
 curl -L 'https://github.com/tmbinc/bgrep/raw/master/bgrep.c' | gcc -O2 -x c -o /usr/local/bin/bgrep -
+
+usage:
+
+bgrep [-B bytes] [-A bytes] [-C bytes] <hex> [<path> [...]]
+
+-B: bytes_before
+-A: bytes_after
+-C: bytes_before and bytes_after
