@@ -134,7 +134,17 @@ void dump_context(int fd, unsigned long long pos)
 void searchfile(const char *filename, int fd, const unsigned char *value, const unsigned char *mask, int len)
 {
 	off_t offset = 0;
-	unsigned char buf[1024];
+
+	// use a search buffer which is at least the next power of two after len
+	size_t bufsize = 1024;
+	while (bufsize <= (size_t)len)
+		bufsize <<= 1;
+	unsigned char *buf = malloc(bufsize);
+
+	if (!buf)
+	{
+		die("error allocating search buffer!");
+	}
 
 	len--;
 
@@ -142,15 +152,15 @@ void searchfile(const char *filename, int fd, const unsigned char *value, const 
 	{
 		int r;
 
-		memmove(buf, buf + sizeof(buf) - len, len);
-		r = read(fd, buf + len, sizeof(buf) - len);
+		memmove(buf, buf + bufsize - len, len);
+		r = read(fd, buf + len, bufsize - len);
 
 		if (r < 0)
 		{
 			perror("read");
-			return;
+			break;
 		} else if (!r)
-			return;
+			break;
 
 		int o, i;
 		for (o = offset ? 0 : len; o < r; ++o)
@@ -170,6 +180,8 @@ void searchfile(const char *filename, int fd, const unsigned char *value, const 
 		offset += r;
 
 	}
+
+	free(buf);
 }
 
 void recurse(const char *path, const unsigned char *value, const unsigned char *mask, int len)
@@ -262,7 +274,7 @@ void parse_opts(int argc, char** argv)
 
 int main(int argc, char **argv)
 {
-	unsigned char value[0x100], mask[0x100];
+	unsigned char *value, *mask;
 	int len = 0;
 
 	if (argc < 2)
@@ -278,7 +290,19 @@ int main(int argc, char **argv)
 	char *h = argv[1];
 	enum {MODE_HEX,MODE_TXT,MODE_TXT_ESC} parse_mode = MODE_HEX;
 
-	while (*h && (parse_mode != MODE_HEX || h[1]) && len < 0x100)
+	// Limit the search string dynamically based on the input string.
+	// The contents of value/mask may end up much shorter than argv[1],
+	// but should never be longer.
+	size_t maxlen = strlen(h);
+	value = malloc(maxlen);
+	mask  = malloc(maxlen);
+
+	if (!value || !mask)
+	{
+		die("error allocating memory for search string!\n");
+	}
+
+	while (*h && (parse_mode != MODE_HEX || h[1]) && len < maxlen)
 	{
 		int on_quote = (h[0] == '"');
 		int on_esc = (h[0] == '\\');
@@ -337,6 +361,7 @@ int main(int argc, char **argv)
 			if ((v0 == -1) || (v1 == -1))
 			{
 				fprintf(stderr, "invalid hex string!\n");
+				free(value); free(mask);
 				return 2;
 			}
 			value[len] = (v0 << 4) | v1; mask[len++] = 0xFF;
@@ -346,6 +371,7 @@ int main(int argc, char **argv)
 	if (!len || *h)
 	{
 		fprintf(stderr, "invalid/empty search string\n");
+		free(value); free(mask);
 		return 2;
 	}
 
@@ -357,5 +383,7 @@ int main(int argc, char **argv)
 		while (c < argc)
 			recurse(argv[c++], value, mask, len);
 	}
+
+	free(value); free(mask);
 	return 0;
 }
