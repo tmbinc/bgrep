@@ -105,7 +105,7 @@ void dump_context(int fd, unsigned long long pos)
 		int read_chunk = bytes_to_read > sizeof(buf) ? sizeof(buf) : bytes_to_read;
 		int bytes_read = read(fd, buf, read_chunk);
 
-		if (bytes_to_read < 0)
+		if (bytes_read < 0)
 		{
 			perror("read");
 			die("Error reading context");
