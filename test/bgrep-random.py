@@ -1,3 +1,5 @@
+#!/usr/bin/python3
+
 import os, subprocess, random
 
 BGREP="../bgrep"
@@ -18,18 +20,17 @@ def test_bgrep(datalen, searchlen):
 	filename = "data"
 	open(filename, "wb").write(data)
 	
-	bgrep_res = subprocess.Popen([BGREP, search.encode('hex'), filename], stdout=subprocess.PIPE).communicate()[0]
+	bgrep_res = subprocess.Popen([BGREP, search.hex(), filename], stdout=subprocess.PIPE).communicate()[0]
 	
-	expected_res = ''.join(["%s: %08x\n" % (filename, i) for i in results])
+	expected_res = ''.join(["%s: %08x\n" % (filename, i) for i in results]).encode('ascii')
 	
 	if bgrep_res != expected_res:
-		print "search: %s" % search.encode('hex')
-		open("res_expected", "w").write(expected_res)
-		open("res_bgrep", "w").write(bgrep_res)
+		print("search: %s" % search.hex())
+		open("res_expected", "wb").write(expected_res)
+		open("res_bgrep", "wb").write(bgrep_res)
 		assert False
 
 while True:
 	datalen = random.randint(0, 1024*1024)
 	searchlen = random.randint(1, 50)
-#	print datalen, searchlen
 	test_bgrep(datalen, searchlen)
