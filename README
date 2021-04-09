@@ -6,7 +6,7 @@ Feel free to modify, branch, fork, improve. Re-licenses as BSD.
 
 To install:
 
-curl -L 'https://github.com/tmbinc/bgrep/raw/master/bgrep.c' | gcc -O2 -x c -o /usr/local/bin/bgrep -
+curl -L 'https://github.com/tmbinc/bgrep/raw/master/bgrep.c' | gcc -O2 -x c -o $HOME/.local/bin/bgrep -
 
 usage:
 
