@@ -31,29 +31,15 @@
  * policies, either expressed or implied, of the copyright holder.
  */
 
-#include <ctype.h>
-#include <dirent.h>
-#include <fcntl.h>
-#include <getopt.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
-#include <sys/types.h>
+
+#include <fcntl.h>
 #include <unistd.h>
 
 #define BGREP_VERSION "0.2"
-
-// The Windows/DOS implementation of read(3) opens files in text mode by
-// default, which means that an 0x1A byte is considered the end of the file
-// unless a non-standard flag is used. Make sure it's defined even on real POSIX
-// environments
-#ifndef O_BINARY
-#define O_BINARY 0
-#endif
-
-int bytes_before = 0, bytes_after = 0;
 
 void die(const char *msg, ...) {
   va_list ap;
@@ -65,57 +51,58 @@ void die(const char *msg, ...) {
 }
 
 void print_char(unsigned char c) {
-  if (isprint(c))
+  if (32 <= c && c <= 126) {
     putchar(c);
-  else
+  } else {
     printf("\\x%02x", (int)c);
+  }
 }
 
-int ascii2hex(char c) {
-  if (c < '0')
+int ascii2hex(unsigned char c) {
+  if (c >= 0x30 && c <= 0x39) {
+    return c - 0x30;
+  } else if (c >= 0x41 && c <= 0x46) {
+    return c - 0x41 + 10;
+  } else if (c >= 0x61 && c <= 0x66) {
+    return c - 0x61 + 10;
+  } else {
     return -1;
-  else if (c <= '9')
-    return c - '0';
-  else if (c < 'A')
-    return -1;
-  else if (c <= 'F')
-    return c - 'A' + 10;
-  else if (c < 'a')
-    return -1;
-  else if (c <= 'f')
-    return c - 'a' + 10;
-  else
-    return -1;
+  }
 }
+
+int g_bytes_before;
+int g_bytes_after;
+const unsigned char *g_hex;
+const char *g_path;
+int g_pid;
 
 /* TODO: this will not work with STDIN or pipes
- * 	 we have to maintain a window of the bytes before which I am too lazy to
- * do right now.
+ * We have to maintain a window of the bytes before
+ * which I am too lazy to do right now.
  */
-void dump_context(int fd, unsigned long long pos) {
-  off_t save_pos = lseek(fd, 0, SEEK_CUR);
+void dump_content(int fd, unsigned long long pos) {
+  int save_pos = lseek(fd, 0, SEEK_CUR);
 
-  if (save_pos == (off_t)-1) {
-    perror("lseek");
+  if (save_pos == -1) {
+    perror("[-] lseek");
     return; /* this one is not fatal*/
   }
 
   char buf[1024];
-  off_t start = pos - bytes_before;
-  int bytes_to_read = bytes_before + bytes_after;
+  int start = pos - g_bytes_before;
+  int bytes_to_read = g_bytes_before + g_bytes_after;
 
-  if (lseek(fd, start, SEEK_SET) == (off_t)-1) {
-    perror("lseek");
+  if (lseek(fd, start, SEEK_SET) == -1) {
+    perror("[-] lseek");
     return;
   }
 
-  for (; bytes_to_read;) {
+  while (bytes_to_read > 0) {
     int read_chunk = bytes_to_read > sizeof(buf) ? sizeof(buf) : bytes_to_read;
     int bytes_read = read(fd, buf, read_chunk);
 
     if (bytes_read < 0) {
-      perror("read");
-      die("Error reading context");
+      die("[-] error reading context");
     }
 
     char *buf_end = buf + bytes_read;
@@ -130,13 +117,13 @@ void dump_context(int fd, unsigned long long pos) {
 
   putchar('\n');
 
-  if (lseek(fd, save_pos, SEEK_SET) == (off_t)-1) {
-    perror("lseek");
-    die("Could not restore the original file offset while printing context");
+  if (lseek(fd, save_pos, SEEK_SET) == (int)-1) {
+    die("[-] could not restore the original file offset while printing "
+        "context");
   }
 }
 
-void search(const char *filename, int fd, const unsigned char *buffer, int size,
+void search(int fd, const unsigned char *buffer, int size,
             const unsigned char *pattern, const unsigned char *mask, int len) {
   int i, j, any_wildcard;
   for (j = 0, any_wildcard = 0; j < len; j++) {
@@ -156,9 +143,9 @@ void search(const char *filename, int fd, const unsigned char *buffer, int size,
         }
       }
       if (j == len) {
-        printf(" [+] %s: %08llx\n", filename, i);
-        if (bytes_before || bytes_after) {
-          dump_context(fd, i);
+        printf(" [+] %s: %08llx\n", g_path, i);
+        if (g_bytes_before || g_bytes_after) {
+          dump_content(fd, i);
         }
       }
       i++;
@@ -191,9 +178,9 @@ void search(const char *filename, int fd, const unsigned char *buffer, int size,
     while (size - i >= len - j) {
       if (j == len) {
         /* found a match, continue at the longest prefix suffix */
-        printf(" [+] %s: %08llx\n", filename, i - j);
-        if (bytes_before || bytes_after) {
-          dump_context(fd, i - j);
+        printf(" [+] %s: %08llx\n", g_path, i - j);
+        if (g_bytes_before || g_bytes_after) {
+          dump_content(fd, i - j);
         }
         j = lps[j - 1];
         continue;
@@ -209,18 +196,17 @@ void search(const char *filename, int fd, const unsigned char *buffer, int size,
   }
 }
 
-void searchfile(const char *filename, int fd, const unsigned char *value,
-                const unsigned char *mask, int len) {
+void search_file(int fd, const unsigned char *value, const unsigned char *mask,
+                 int len) {
   int r, tail = len - 1, offset = 0;
-
-  // use a search buffer which is at least the next power of two after len
   size_t bufsize = 1024;
+  /* use a search buffer which is at least the next power of two after len */
   while (bufsize <= (size_t)len)
     bufsize <<= 1;
-  unsigned char *buf = malloc(bufsize);
 
+  unsigned char *buf = malloc(bufsize);
   if (!buf) {
-    die("error allocating search buffer!");
+    die("[-] error allocating search buffer!");
   }
 
   while (1) {
@@ -233,151 +219,151 @@ void searchfile(const char *filename, int fd, const unsigned char *value,
     } else if (!r)
       break;
 
-    search(filename, fd, buf + offset, r, value, mask, len);
+    search(fd, buf + offset, r, value, mask, len);
     offset += r;
   }
 
   free(buf);
 }
 
-void recurse(const char *path, const unsigned char *value,
-             const unsigned char *mask, int len) {
-  struct stat s;
-  if (stat(path, &s)) {
-    perror("stat");
-    return;
-  }
-  if (!S_ISDIR(s.st_mode)) {
-    int fd = open(path, O_RDONLY | O_BINARY);
-    if (fd < 0)
-      perror(path);
-    else {
-      searchfile(path, fd, value, mask, len);
-      close(fd);
-    }
-    return;
-  }
-
-  DIR *dir = opendir(path);
-  if (!dir) {
-    perror(path);
-    exit(3);
-  }
-
-  struct dirent *d;
-  while ((d = readdir(dir))) {
-    if (!(strcmp(d->d_name, ".") && strcmp(d->d_name, "..")))
-      continue;
-    char newpath[strlen(path) + strlen(d->d_name) + 1];
-    strcpy(newpath, path);
-    strcat(newpath, "/");
-    strcat(newpath, d->d_name);
-    recurse(newpath, value, mask, len);
-  }
-
-  closedir(dir);
-}
-
 void usage(char **argv) {
   fprintf(stderr, "bgrep version: %s\n", BGREP_VERSION);
   fprintf(stderr,
-          "usage: %s [-B bytes] [-A bytes] [-C bytes] <hex> [<path> [...]]\n",
+          "usage: %s [-a bytes] [-b bytes] [-c bytes] [-p pid] <hex> <path>\n",
           *argv);
+  fprintf(stderr, " -a bytes to show after the match\n"
+                  " -b bytes to show before the match\n"
+                  " -c bytes count, both before and after\n"
+                  " -p process id/-f file path\n");
   exit(1);
 }
 
-void parse_opts(int argc, char **argv) {
-  int c;
+typedef enum {
+  PARSE_RST,
+  PARSE_HEX,
+  PARSE_BAFTER,
+  PARSE_BBEFORE,
+  PARSE_BCOUNT,
+  PARSE_PID,
+  PARSE_PATH
+} parse_stat;
 
-  while ((c = getopt(argc, argv, "A:B:C:")) != -1) {
-    switch (c) {
-    case 'A':
-      bytes_after = atoi(optarg);
+struct {
+  const char *repr;
+  parse_stat opt;
+} g_options[] = {{"-a", PARSE_BAFTER},  {"--bytes-after", PARSE_BAFTER},
+                 {"-b", PARSE_BBEFORE}, {"--bytes-before", PARSE_BBEFORE},
+                 {"-c", PARSE_BCOUNT},  {"--bytes-count", PARSE_BCOUNT},
+                 {"-p", PARSE_PID},     {"--pid", PARSE_PID},
+                 {"-f", PARSE_PATH},    {"--file", PARSE_PATH},
+                 {NULL, (parse_stat)0}};
+
+void parse_opts(int argc, char **argv) {
+  int i = 1, j, k;
+  parse_stat stat = PARSE_RST;
+
+  while (i < argc) {
+    switch (stat) {
+    case PARSE_RST:
+      if (argv[i][0] == '-') {
+        for (k = 0; k < sizeof(g_options) / sizeof(g_options[0]); k++) {
+          if (g_options[k].repr == NULL) {
+            usage(argv);
+            return;
+          }
+          if (strcmp(argv[i], g_options[k].repr) == 0) {
+            break;
+          }
+        }
+        stat = g_options[k].opt;
+        break;
+      } else {
+        stat = PARSE_HEX;
+        break;
+      }
+    case PARSE_HEX:
+      if (g_hex != NULL) {
+        usage(argv);
+        return;
+      }
+      g_hex = argv[i++];
+      stat = PARSE_RST;
       break;
-    case 'B':
-      bytes_before = atoi(optarg);
+    case PARSE_BAFTER:
+      g_bytes_after = atoi(argv[i++]);
+      stat = PARSE_RST;
       break;
-    case 'C':
-      bytes_before = bytes_after = atoi(optarg);
+    case PARSE_BBEFORE:
+      g_bytes_before = atoi(argv[i++]);
+      stat = PARSE_RST;
+      break;
+    case PARSE_BCOUNT:
+      g_bytes_after = g_bytes_before = atoi(argv[i++]);
+      stat = PARSE_RST;
+      break;
+    case PARSE_PID:
+      if (g_path != NULL) {
+        usage(argv);
+        return;
+      }
+      g_pid = atoi(argv[i++]);
+      stat = PARSE_RST;
+      break;
+    case PARSE_PATH:
+      if (g_pid != 0) {
+        usage(argv);
+        return;
+      }
+      g_path = argv[i++];
+      stat = PARSE_RST;
       break;
     default:
-      usage(argv);
+      die("[-] unknown error");
     }
   }
 
-  if (bytes_before < 0)
-    die("Invalid value %d for bytes before", bytes_before);
-  if (bytes_after < 0)
-    die("Invalid value %d for bytes after", bytes_after);
+  if (g_bytes_before < 0) {
+    die("[-] invalid value %d for bytes before", g_bytes_before);
+  } else if (g_bytes_after < 0) {
+    die("[-] invalid value %d for bytes after", g_bytes_after);
+  } else if (g_pid < 0) {
+    die("[-] invalid value %d for pid", g_pid);
+  }
 }
 
-int main(int argc, char **argv) {
-  unsigned char *value, *mask;
-  int len = 0;
+/* The Windows/DOS implementation of read(3) opens files in text mode by
+ * default, which means that an 0x1A byte is considered the end of the file
+ * unless a non-standard flag is used. Make sure it's defined even on real POSIX
+ * environments
+ */
+#ifndef O_BINARY
+#define O_BINARY 0
+#endif
 
+int main(int argc, char **argv) {
   if (argc < 2) {
     usage(argv);
     return 1;
   }
-
   parse_opts(argc, argv);
-  argv += optind - 1; /* advance the pointer to the first non-opt arg */
-  argc -= optind - 1;
 
-  char *h = argv[1];
-  enum { MODE_HEX, MODE_TXT, MODE_TXT_ESC } parse_mode = MODE_HEX;
+  /* Limit the search string dynamically based on the input string.
+   * The contents of value/mask may end up much shorter than argv[1],
+   * but should never be longer.
+   */
+  const char *h = g_hex;
+  size_t maxlen = strlen(g_hex);
+  unsigned char *pattern = malloc(maxlen);
+  unsigned char *mask = malloc(maxlen);
+  int len = 0;
 
-  // Limit the search string dynamically based on the input string.
-  // The contents of value/mask may end up much shorter than argv[1],
-  // but should never be longer.
-  size_t maxlen = strlen(h);
-  value = malloc(maxlen);
-  mask = malloc(maxlen);
-
-  if (!value || !mask) {
-    die("error allocating memory for search string!\n");
+  if (pattern == NULL || mask == NULL) {
+    die("[-] error allocating pattern buffer!");
   }
 
-  while (*h && (parse_mode != MODE_HEX || h[1]) && len < maxlen) {
-    int on_quote = (h[0] == '"');
-    int on_esc = (h[0] == '\\');
-
-    switch (parse_mode) {
-    case MODE_HEX:
-      if (on_quote) {
-        parse_mode = MODE_TXT;
-        h++;
-        continue; /* works under switch - will continue the loop*/
-      }
-      break; /* this one is for switch */
-    case MODE_TXT:
-      if (on_quote) {
-        parse_mode = MODE_HEX;
-        h++;
-        continue;
-      }
-
-      if (on_esc) {
-        parse_mode = MODE_TXT_ESC;
-        h++;
-        continue;
-      }
-
-      value[len] = h[0];
-      mask[len++] = 0xff;
-      h++;
-      continue;
-
-    case MODE_TXT_ESC:
-      value[len] = h[0];
-      mask[len++] = 0xff;
-      parse_mode = MODE_TXT;
-      h++;
-      continue;
-    }
-    //
+  while (*h && len < maxlen) {
     if (h[0] == '?' && h[1] == '?') {
-      value[len] = mask[len] = 0;
+      pattern[len] = mask[len] = 0;
       len++;
       h += 2;
     } else if (h[0] == ' ') {
@@ -387,32 +373,40 @@ int main(int argc, char **argv) {
       int v1 = ascii2hex(*h++);
 
       if ((v0 == -1) || (v1 == -1)) {
-        fprintf(stderr, "invalid hex string!\n");
-        free(value);
+        fprintf(stderr, "[-] invalid hex string!\n");
+        free(pattern);
         free(mask);
         return 2;
       }
-      value[len] = (v0 << 4) | v1;
+      pattern[len] = (v0 << 4) | v1;
       mask[len++] = 0xFF;
     }
   }
 
   if (!len || *h) {
-    fprintf(stderr, "invalid/empty search string\n");
-    free(value);
+    fprintf(stderr, "[-] invalid/empty search string\n");
+    free(pattern);
     free(mask);
     return 2;
   }
 
-  if (argc < 3)
-    searchfile("stdin", 0, value, mask, len);
-  else {
-    int c = 2;
-    while (c < argc)
-      recurse(argv[c++], value, mask, len);
+  if (g_pid != 0) {
+    /* todo
+     * virtual memory bgrep
+     */
+  } else if (g_path == NULL) {
+    g_path = "stdin"; /* read from stdin */
+    search_file(0, pattern, mask, len);
+  } else { /* physical memory bgrep */
+    int fd = open(g_path, O_RDONLY | O_BINARY);
+    if (fd < 0) {
+      die("[-] unable to open %s", g_path);
+    } else {
+      search_file(fd, pattern, mask, len);
+    }
   }
 
-  free(value);
+  free(pattern);
   free(mask);
   return 0;
 }
