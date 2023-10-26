@@ -1,4 +1,3 @@
-
 /* The Windows/DOS implementation of read(3) opens files in text mode by
  * default, which means that an 0x1A byte is considered the end of the file
  * unless a non-standard flag is used. Make sure it's defined even on real POSIX
@@ -7,23 +6,12 @@
 #ifndef O_BINARY
 #define O_BINARY 0
 #endif
+
 void print_char(unsigned char c) {
   if (32 <= c && c <= 126) {
     putchar(c);
   } else {
     printf("\\x%02x", (int)c);
-  }
-}
-
-unsigned char ascii2hex(unsigned char c) {
-  if (c >= 0x30 && c <= 0x39) {
-    return c - 0x30;
-  } else if (c >= 0x41 && c <= 0x46) {
-    return c - 0x41 + 10;
-  } else if (c >= 0x61 && c <= 0x66) {
-    return c - 0x61 + 10;
-  } else {
-    return -1;
   }
 }
 

@@ -44,15 +44,17 @@ typedef unsigned long long ull;
 /* Sunday algorithm
  * modified for masked pattern
  */
-void search(uc *bytes, int size, uc *pattern, uc *mask, int len) {
+void search(uc *buffer, int size, uc *pattern, uc *mask, int len) {
   if (size < len) {
     return;
   }
+
   int i, j, delta[256];
   uc c, M, m;
   for (c = 0; c < 256; c++) {
     delta[c] = len + 1;
   }
+
   // preprocessing
   for (j = 0; j < len; j++) {
     if (mask[j] == 0xff) {
@@ -69,27 +71,29 @@ void search(uc *bytes, int size, uc *pattern, uc *mask, int len) {
       }
     }
   }
+
   // grouped by 8 bytes
   i = 0;
   while (size - i >= len) {
     j = 0;
     while (j < len) {
       if (j + 8 > len) {
-        if ((*(ull *)(bytes + i + j) & *(ull *)(mask + j)) << (8 - len + j) !=
+        if ((*(ull *)(buffer + i + j) & *(ull *)(mask + j)) << (8 - len + j) !=
             (*(ull *)(pattern + j)) << (8 - len + j)) {
           break;
         }
-      } else if ((*(ull *)(bytes + i + j) & *(ull *)(mask + j)) !=
+      } else if ((*(ull *)(buffer + i + j) & *(ull *)(mask + j)) !=
                  *(ull *)(pattern + j)) {
         break;
       }
       j += 8;
     }
     if (j >= len) {
-      printf("[+] %02X\n", i);
+      // we get a match
+      printf("%02X\n", i);
     }
     if (i + len < size) {
-      i += delta[bytes[i + len]];
+      i += delta[buffer[i + len]];
     }
   }
 }
@@ -137,11 +141,11 @@ struct {
                  {"-c", PARSE_BCOUNT},  {"--bytes-count", PARSE_BCOUNT},
                  {NULL, (parse_stat)0}};
 
-uc *g_hex;
-int g_pid;
-char *g_path;
 int g_bytes_after;
 int g_bytes_before;
+int g_pid;
+char *g_path;
+char *g_hex;
 
 void parse_opts(int argc, char **argv) {
   int i = 1, j, k;
@@ -154,65 +158,81 @@ void parse_opts(int argc, char **argv) {
         for (k = 0; k < sizeof(g_options) / sizeof(g_options[0]); k++) {
           if (g_options[k].repr == NULL) {
             usage(argv);
-            return;
-          }
-          if (strcmp(argv[i], g_options[k].repr) == 0) {
+          } else if (strcmp(argv[i], g_options[k].repr) == 0) {
+            stat = g_options[k].opt;
             break;
           }
         }
-        stat = g_options[k].opt;
-        break;
+        i++;
       } else {
         stat = PARSE_HEX;
-        break;
       }
+      break;
     case PARSE_HEX:
       if (g_hex != NULL) {
         usage(argv);
-        return;
+      } else {
+        g_hex = argv[i];
+        for (j = 0; g_hex[j]; j++) {
+          if (g_hex[j] == '?' || g_hex[j] == ' ') {
+            continue;
+          } else if (g_hex[j] >= '0' && g_hex[j] <= '9') {
+            continue;
+          } else if (g_hex[j] >= 'a' && g_hex[j] <= 'f') {
+            continue;
+          } else if (g_hex[j] >= 'A' && g_hex[j] <= 'F') {
+            continue;
+          }
+          die("invalid hex string");
+        }
+        if (j % 2 == 1 || j == 0) {
+          die("invalid/empty hex string");
+        }
+        goto next_opt;
       }
-      g_hex = argv[i++];
-      stat = PARSE_RST;
-      break;
     case PARSE_BAFTER:
-      g_bytes_after = atoi(argv[i++]);
-      stat = PARSE_RST;
-      break;
+      g_bytes_after = atoi(argv[i]);
+      if (g_bytes_after <= 0) {
+        die("invalid value %s for bytes after", argv[i]);
+      }
+      goto next_opt;
     case PARSE_BBEFORE:
-      g_bytes_before = atoi(argv[i++]);
-      stat = PARSE_RST;
-      break;
+      g_bytes_before = atoi(argv[i]);
+      if (g_bytes_before <= 0) {
+        die("invalid value %s for bytes after", argv[i]);
+      }
+      goto next_opt;
     case PARSE_BCOUNT:
-      g_bytes_after = g_bytes_before = atoi(argv[i++]);
-      stat = PARSE_RST;
-      break;
+      g_bytes_after = g_bytes_before = atoi(argv[i]);
+      if (g_bytes_after <= 0) {
+        die("invalid value %s for bytes after", argv[i]);
+      } else if (g_bytes_before <= 0) {
+        die("invalid value %s for bytes after", argv[i]);
+      }
+      goto next_opt;
     case PARSE_PID:
       if (g_path != NULL) {
-        usage(argv);
-        return;
+        die("cannot specify both pid and path");
+      } else {
+        g_pid = atoi(argv[i]);
+        if (g_pid <= 0) {
+          die("invalid value %s for pid", argv[i]);
+        }
       }
-      g_pid = atoi(argv[i++]);
-      stat = PARSE_RST;
-      break;
+      goto next_opt;
     case PARSE_PATH:
       if (g_pid != 0) {
-        usage(argv);
-        return;
+        die("cannot specify both pid and path");
+      } else {
+        g_path = argv[i];
       }
-      g_path = argv[i++];
+    next_opt:
+      i++;
       stat = PARSE_RST;
       break;
     default:
-      die("[-] unknown error");
+      die("unknown error");
     }
-  }
-
-  if (g_bytes_before < 0) {
-    die("[-] invalid value %d for bytes before", g_bytes_before);
-  } else if (g_bytes_after < 0) {
-    die("[-] invalid value %d for bytes after", g_bytes_after);
-  } else if (g_pid < 0) {
-    die("[-] invalid value %d for pid", g_pid);
   }
 }
 
@@ -223,64 +243,44 @@ int main(int argc, char **argv) {
   }
   parse_opts(argc, argv);
 
-  /* Limit the search string dynamically based on the input string.
-   * The contents of value/mask may end up much shorter than argv[1],
-   * but should never be longer.
-   */
-  const char *h = g_hex;
-  size_t maxlen = strlen(g_hex);
-  unsigned char *pattern = malloc(maxlen);
-  unsigned char *mask = malloc(maxlen);
-  int len = 0;
-
+  int plen = (strlen(g_hex) >> 1) + 1;
+  uc *pattern = (uc *)memset(malloc(plen), 0, plen);
+  uc *mask = (uc *)memset(malloc(plen), 0, plen);
   if (pattern == NULL || mask == NULL) {
-    die("[-] error allocating pattern buffer!");
+    die("error allocating pattern buffer");
   }
 
-  while (*h && len < maxlen) {
-    if (h[0] == '?' && h[1] == '?') {
-      pattern[len] = mask[len] = 0;
-      len++;
-      h += 2;
-    } else if (h[0] == ' ') {
-      h++;
-    } else {
-      int v0 = ascii2hex(*h++);
-      int v1 = ascii2hex(*h++);
-
-      if ((v0 == -1) || (v1 == -1)) {
-        fprintf(stderr, "[-] invalid hex string!\n");
-        free(pattern);
-        free(mask);
-        return 2;
-      }
-      pattern[len] = (v0 << 4) | v1;
-      mask[len++] = 0xFF;
+  int len = 0;
+  uc *j = (uc *)g_hex, j0, j1;
+  while (*j && len < plen) {
+    if (*j == ' ') {
+      j++;
+      continue;
     }
-  }
-
-  if (!len || *h) {
-    fprintf(stderr, "[-] invalid/empty search string\n");
-    free(pattern);
-    free(mask);
-    return 2;
+    // ascii to hex
+    if (*j != '?') {
+      j1 = (*j & 0xf) + ((*j >> 6) & 0xa);
+      pattern[len] |= j1 << 4;
+      mask[len] |= 0xf0;
+    }
+    if (*(j + 1) != '?') {
+      j0 = (*(j + 1) & 0xf) + ((*(j + 1) >> 6) & 0xa);
+      pattern[len] |= j0;
+      mask[len++] |= 0xf;
+    }
+    j += 2;
   }
 
   if (g_pid != 0) {
-    /* todo
-     * virtual memory bgrep
-     */
+    // virtual bgrep
   } else if (g_path == NULL) {
-    g_path = "stdin"; /* read from stdin */
-    search_file(0, pattern, mask, len);
-  } else { /* physical memory bgrep */
-    int fd = open(g_path, O_RDONLY | O_BINARY);
-    if (fd < 0) {
-      die("[-] unable to open %s", g_path);
-    } else {
-      search_file(fd, pattern, mask, len);
-    }
+    // stdin bgrep
+  } else {
+    // physical bgrep
   }
+
+  // printf("bytes_after: %d\nbytes_before: %d\npid: %d\npath: %s\nhex: %s\n",
+  //        g_bytes_after, g_bytes_before, g_pid, g_path, g_hex);
 
   free(pattern);
   free(mask);
