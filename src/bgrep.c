@@ -111,7 +111,7 @@ void usage(char **argv) {
   fprintf(stderr, "bgrep version: %s\n", BGREP_VERSION);
   fprintf(
       stderr,
-      "usage: %s [-a bytes] [-b bytes] [-c bytes] [-p pid]|[-f file] <hex>\n",
+      "usage: %s [-a bytes] [-b bytes] [-c bytes] [-p pid]|[-f path] <hex>\n",
       *argv);
   fprintf(stderr, " -a --bytes-after  bytes to show after the match\n"
                   " -b --bytes-before bytes to show before the match\n"

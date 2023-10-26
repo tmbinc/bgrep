@@ -1,17 +1,27 @@
-I'm terribly annoyed by the fact that grep(1) cannot look for binary
-strings. I'm even more annoyed by the fact that a simple search for 
-"binary grep" doesn't yield a tool which could do that. So I wrote one.
+This is an binary grep program forked from tmbinc/bgrep.
+
+I'm trying to find specific binary signatures in a program at RUNTIME. The
+original version of bgrep won't do much help so I decided to modify it.
+
+My bgrep now supports binary searching both physically and virtually, using a
+modified Sunday algorithm with masked patterns. I also removed some rarely-used
+binary pattern grammar to simplify the code.
 
 Feel free to modify, branch, fork, improve. Re-licenses as BSD.
 
-To install:
-
-curl -L 'https://github.com/tmbinc/bgrep/raw/master/bgrep.c' | gcc -O2 -x c -o $HOME/.local/bin/bgrep -
-
 usage:
 
-bgrep [-B bytes] [-A bytes] [-C bytes] <hex> [<path> [...]]
+usage: bgrep [-a bytes] [-b bytes] [-c bytes] [-p pid]|[-f path] <hex>
 
--B: bytes_before
--A: bytes_after
--C: bytes_before and bytes_after
+-a --bytes-after  bytes to show after the match
+-b --bytes-before bytes to show before the match
+-c --bytes-count  bytes to show before and after
+-p --pid          process id
+-f --file         path of file to read
+
+The hex string should only include 0-9, a-z, A-Z and wildcard ?. Spaces are
+allowed to avoid mistakes.
+
+an example to find x86 function prefixes in process 123:
+
+bgrep -a 10 -p 123 5589e5??
