@@ -1,5 +1,5 @@
 /* a fork of bgrep
- * mozkito <three1518@163.com>
+ * mozkito <three1518@163.com> 2023
  *
  * Copyright 2009 Felix Domke <tmbinc@elitedvb.net>. All rights reserved.
  *
@@ -40,6 +40,22 @@
 
 typedef unsigned char uc;
 typedef unsigned long long ull;
+
+#ifdef _WIN32
+#include <windows.h>
+
+typedef HANDLE handle_f;
+typedef HANDLE handle_p;
+
+#else
+
+#include <fnctl.h>
+#include <unistd.h>
+
+typedef int handle_f;
+typedef int handle_p;
+
+#endif
 
 /* Sunday algorithm
  * modified for masked pattern
@@ -90,11 +106,19 @@ void search(uc *buffer, int size, uc *pattern, uc *mask, int len) {
     }
     if (j >= len) {
       // we get a match
-      printf("%02X\n", i);
+      // printf("%02X\n", i);
     }
     if (i + len < size) {
       i += delta[buffer[i + len]];
     }
+  }
+}
+
+void print_char(unsigned char c) {
+  if (32 <= c && c <= 126) {
+    putchar(c);
+  } else {
+    printf("\\x%02x", (int)c);
   }
 }
 
@@ -108,17 +132,83 @@ void die(const char *msg, ...) {
 }
 
 void usage(char **argv) {
-  fprintf(stderr, "bgrep version: %s\n", BGREP_VERSION);
-  fprintf(
-      stderr,
-      "usage: %s [-a bytes] [-b bytes] [-c bytes] [-p pid]|[-f path] <hex>\n",
-      *argv);
-  fprintf(stderr, " -a --bytes-after  bytes to show after the match\n"
-                  " -b --bytes-before bytes to show before the match\n"
-                  " -c --bytes-count  bytes to show before and after\n"
-                  " -p --pid          process id\n"
-                  " -f --file         path of file to read\n");
+  printf("bgrep version: %s\n", BGREP_VERSION);
+  printf("usage: bgrep [options] <hex>\n");
+  printf("options:\n");
+  printf("  -a, --bytes-after [length]: bytes to show after the match\n");
+  printf("  -b, --bytes-before [length]: bytes to show before the match\n");
+  printf("  -c, --bytes-count [length]: bytes to show before and after\n");
+  printf("  -p, --pid [pid]: id of process to read\n");
+  printf("  -f, --file [path]: path of file to read\n");
   exit(1);
+}
+
+int g_bytes_after;
+int g_bytes_before;
+int g_pid;
+char *g_path;
+char *g_hex;
+
+#ifdef _WIN32
+
+handle_f open_file(char *path) {
+  handle_f fileHandle =
+      CreateFileA((LPCSTR)path, GENERIC_READ, FILE_SHARE_READ, NULL,
+                  OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+  if (fileHandle == INVALID_HANDLE_VALUE) {
+    die("cannot open file %s", path);
+  } else {
+    DWORD fileAttributes = GetFileAttributesA((LPCSTR)path);
+    if (fileAttributes == INVALID_FILE_ATTRIBUTES ||
+        (fileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
+      die("%s is not a regular file", path);
+    }
+  }
+  return fileHandle;
+}
+
+// universal file read API
+int read_file(handle_f hf, uc *buffer, int size) { return 0; }
+
+void close_file(handle_f hf) { CloseHandle(hf); }
+
+#else
+
+handle_f open_file(char *path) {}
+
+// universal file read API
+int read_file(handle_f hf, uc *buffer, int size) { return 0; }
+
+void close_file(handle_f hf) { close(hf); }
+
+#endif
+
+void search_file(handle_f hf, uc *pattern, uc *mask, int len) {
+  int size = 1024, ct;
+  while (size <= len) {
+    size <<= 1; // making a buffer twice the length of pattern
+    if (size == 0) {
+      die("error allocating search buffer");
+    }
+  }
+  uc *buffer = (uc *)memset(malloc(size), 0, size);
+  if (buffer == NULL) {
+    die("error allocating search buffer");
+  }
+
+  if (ct = read_file(hf, buffer, size) > 0) {
+    search(buffer, buffer + ct, pattern, mask, len);
+    if (ct == size) {
+      do {
+        memmove(buffer, buffer + size - (len - 1), len - 1);
+        if ((ct = read_file(hf, buffer + len - 1, size - (len - 1))) > 0) {
+          search(buffer, ct + len - 1, pattern, mask, len);
+        }
+      } while (ct <= 0);
+    }
+  }
+
+  free(buffer);
 }
 
 typedef enum {
@@ -132,20 +222,15 @@ typedef enum {
 } parse_stat;
 
 struct {
+  const char *abbr;
   const char *repr;
   parse_stat opt;
-} g_options[] = {{"-p", PARSE_PID},     {"--pid", PARSE_PID},
-                 {"-f", PARSE_PATH},    {"--file", PARSE_PATH},
-                 {"-a", PARSE_BAFTER},  {"--bytes-after", PARSE_BAFTER},
-                 {"-b", PARSE_BBEFORE}, {"--bytes-before", PARSE_BBEFORE},
-                 {"-c", PARSE_BCOUNT},  {"--bytes-count", PARSE_BCOUNT},
-                 {NULL, (parse_stat)0}};
-
-int g_bytes_after;
-int g_bytes_before;
-int g_pid;
-char *g_path;
-char *g_hex;
+} g_options[] = {{"-p", "--pid", PARSE_PID},
+                 {"-f", "--file", PARSE_PATH},
+                 {"-a", "--bytes-after", PARSE_BAFTER},
+                 {"-b", "--bytes-before", PARSE_BBEFORE},
+                 {"-c", "--bytes-count", PARSE_BCOUNT},
+                 {NULL, NULL, (parse_stat)0}};
 
 void parse_opts(int argc, char **argv) {
   int i = 1, j, k;
@@ -156,9 +241,10 @@ void parse_opts(int argc, char **argv) {
     case PARSE_RST:
       if (argv[i][0] == '-') {
         for (k = 0; k < sizeof(g_options) / sizeof(g_options[0]); k++) {
-          if (g_options[k].repr == NULL) {
+          if (g_options[k].opt == 0) {
             usage(argv);
-          } else if (strcmp(argv[i], g_options[k].repr) == 0) {
+          } else if (strcmp(argv[i], g_options[k].abbr) == 0 ||
+                     strcmp(argv[i], g_options[k].repr) == 0) {
             stat = g_options[k].opt;
             break;
           }
@@ -234,6 +320,10 @@ void parse_opts(int argc, char **argv) {
       die("unknown error");
     }
   }
+  // must specify one of pid and path
+  if (g_pid == 0 && g_path == NULL) {
+    die("must specify one of pid and path");
+  }
 }
 
 int main(int argc, char **argv) {
@@ -271,16 +361,17 @@ int main(int argc, char **argv) {
     j += 2;
   }
 
-  if (g_pid != 0) {
+  if (g_pid == 0) {
     // virtual bgrep
-  } else if (g_path == NULL) {
-    // stdin bgrep
   } else {
     // physical bgrep
   }
 
-  // printf("bytes_after: %d\nbytes_before: %d\npid: %d\npath: %s\nhex: %s\n",
-  //        g_bytes_after, g_bytes_before, g_pid, g_path, g_hex);
+  printf("bytes_after: %d\nbytes_before: %d\npid: %d\npath: %s\nhex: %s\n",
+         g_bytes_after, g_bytes_before, g_pid, g_path, g_hex);
+
+  for (j = 0; j < len; j++) {
+  }
 
   free(pattern);
   free(mask);

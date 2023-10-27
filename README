@@ -1,27 +1,26 @@
 This is an binary grep program forked from tmbinc/bgrep.
 
-I'm trying to find specific binary signatures in a program at RUNTIME. The
-original version of bgrep won't do much help so I decided to modify it.
+I was trying to find specific binary signatures in a program at RUNTIME. But
+sadly the original version of bgrep won't do much help so I decided to modify
+it.
 
-My bgrep now supports binary searching both physically and virtually, using a
-modified Sunday algorithm with masked patterns. I also removed some rarely-used
-binary pattern grammar to simplify the code.
+My bgrep now supports searching both files and processes, using a modified
+Sunday algorithm with masked patterns. I also removed some rarely-used pattern
+grammar to simplify the code.
 
 Feel free to modify, branch, fork, improve. Re-licenses as BSD.
 
-usage:
+usage: bgrep [options] <hex>
+options:
+  -a, --bytes-after [length]: bytes to show after the match
+  -b, --bytes-before [length]: bytes to show before the match
+  -c, --bytes-count  [length]: bytes to show before and after
+  -p, --pid [pid]: id of process to search
+  -f, --file [path]: path of file to search
 
-usage: bgrep [-a bytes] [-b bytes] [-c bytes] [-p pid]|[-f path] <hex>
-
--a --bytes-after  bytes to show after the match
--b --bytes-before bytes to show before the match
--c --bytes-count  bytes to show before and after
--p --pid          process id
--f --file         path of file to read
-
-The hex string should only include 0-9, a-z, A-Z and wildcard ?. Spaces are
+The hex string is made up of 0-9, a-f, A-F and wildcard ?. Spaces are
 allowed to avoid mistakes.
 
 an example to find x86 function prefixes in process 123:
 
-bgrep -a 10 -p 123 5589e5??
+bgrep -a 10 5589e5?? -p 123
