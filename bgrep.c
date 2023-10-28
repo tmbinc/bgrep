@@ -36,6 +36,7 @@
 #include <string.h>
 
 #define BGREP_VERSION "0.3"
+#define BUFFER_SIZE 1024
 
 typedef unsigned char uc;
 typedef unsigned long long ull;
@@ -44,17 +45,17 @@ typedef unsigned long long ull;
 #include <windows.h>
 
 typedef HANDLE handle_f;
-typedef HANDLE handle_p;
 
 #else
+
+#define __USE_FILE_OFFSET64 // enable lseek64
+#include <unistd.h>
 
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <sys/types.h>
-#include <unistd.h>
 
 typedef int handle_f;
-typedef int handle_p;
 
 #endif
 
@@ -203,8 +204,38 @@ void close_file(handle_f hf) {
 #endif
 }
 
+void seek_file(handle_f hf, ull pos) {
+#ifdef _WIN32
+  if (!SetFilePointerEx(hf, (LARGE_INTEGER)pos, NULL, FILE_BEGIN)) {
+    die("error setting file pointer");
+  }
+#else
+  if (lseek(hf, pos, SEEK_SET) == -1) {
+    die("error setting file pointer");
+  }
+#endif
+}
+
+void dump_context(handle_f hf, ull offset) {
+  uc context[BUFFER_SIZE];
+  ull pos = offset > g_bytes_before ? offset - g_bytes_before : 0;
+  int to_read = offset - pos + g_bytes_after;
+  int ct = 0, j;
+
+  seek_file(hf, pos);
+  do {
+    ct = read_file(hf, context, to_read > BUFFER_SIZE ? BUFFER_SIZE : to_read);
+    for (j = 0; j < ct; j++) {
+      printf("%02X ", context[j]);
+    }
+    to_read -= ct;
+  } while (ct > 0);
+
+  printf("\n");
+}
+
 void search_file(handle_f hf, uc *pattern, uc *mask, int len) {
-  int size = 1024, ct;
+  int size = BUFFER_SIZE, ct;
   while (size < (len << 1)) {
     size <<= 1; // making a buffer twice the length of pattern
     if (size == 0) {
@@ -232,8 +263,6 @@ void search_file(handle_f hf, uc *pattern, uc *mask, int len) {
 
   free(buffer);
 }
-
-void dump_context(handle_f hf, ull offset) { printf("\n"); }
 
 typedef enum parse_stat {
   PARSE_RST,
