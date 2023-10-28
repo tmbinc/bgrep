@@ -23,4 +23,4 @@ allowed to avoid mistakes.
 
 an example to find x86 function prefixes in process 123:
 
-bgrep -a 10 5589e5?? -p 123
+bgrep -a 10 "5589e5??" -p 123

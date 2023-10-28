@@ -1,35 +1,34 @@
-/* a fork of bgrep
- * mozkito <three1518@163.com> 2023
- *
- * Copyright 2009 Felix Domke <tmbinc@elitedvb.net>. All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- *    1. Redistributions of source code must retain the above copyright notice,
- *    this list of
- *       conditions and the following disclaimer.
- *
- *    2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list
- *       of conditions and the following disclaimer in the documentation and/or
- *       other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDER ``AS IS'' AND ANY EXPRESS
- * OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
- * OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO
- * EVENT SHALL <COPYRIGHT HOLDER> OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT,
- * INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
- * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
- * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
- * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
- * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- * The views and conclusions contained in the software and documentation are
- * those of the authors and should not be interpreted as representing official
- * policies, either expressed or implied, of the copyright holder.
- */
+/* Grep binary signatures
+   Forked by mozkito <three1518@163.com>
+
+   Copyright 2009 Felix Domke <tmbinc@elitedvb.net>. All rights reserved.
+
+   Redistribution and use in source and binary forms, with or without
+   modification, are permitted provided that the following conditions are met:
+
+      1. Redistributions of source code must retain the above copyright notice,
+      this list of
+         conditions and the following disclaimer.
+
+      2. Redistributions in binary form must reproduce the above copyright
+      notice, this list
+         of conditions and the following disclaimer in the documentation and/or
+         other materials provided with the distribution.
+
+   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDER ``AS IS'' AND ANY EXPRESS
+   OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+   OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO
+   EVENT SHALL <COPYRIGHT HOLDER> OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT,
+   INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+   (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+   LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+   SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+   The views and conclusions contained in the software and documentation are
+   those of the authors and should not be interpreted as representing official
+   policies, either expressed or implied, of the copyright holder.  */
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -49,7 +48,9 @@ typedef HANDLE handle_p;
 
 #else
 
-#include <fnctl.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 #include <unistd.h>
 
 typedef int handle_f;
@@ -57,17 +58,33 @@ typedef int handle_p;
 
 #endif
 
-/* Sunday algorithm
- * modified for masked pattern
- */
+void die(const char *msg, ...) {
+  va_list ap;
+  va_start(ap, msg);
+  vfprintf(stderr, msg, ap);
+  fprintf(stderr, "\n");
+  va_end(ap);
+  exit(1);
+}
+
+typedef struct match {
+  ull offset;
+  struct match *next;
+} match;
+
+ull g_base;
+match g_results = {(ull)0, (match *)NULL};
+match *g_rptr = &g_results;
+
+// Sunday algorithm, modified for masked pattern
 void search(uc *buffer, int size, uc *pattern, uc *mask, int len) {
   if (size < len) {
     return;
   }
 
-  int i, j, delta[256];
-  uc c, M, m;
-  for (c = 0; c < 256; c++) {
+  int i, j, c, delta[256];
+  uc M, m;
+  for (c = 0; c <= 0xff; c++) {
     delta[c] = len + 1;
   }
 
@@ -92,43 +109,35 @@ void search(uc *buffer, int size, uc *pattern, uc *mask, int len) {
   i = 0;
   while (size - i >= len) {
     j = 0;
-    while (j < len) {
-      if (j + 8 > len) {
-        if ((*(ull *)(buffer + i + j) & *(ull *)(mask + j)) << (8 - len + j) !=
-            (*(ull *)(pattern + j)) << (8 - len + j)) {
-          break;
-        }
-      } else if ((*(ull *)(buffer + i + j) & *(ull *)(mask + j)) !=
-                 *(ull *)(pattern + j)) {
+    while (j <= len - 8) {
+      if ((*(ull *)(buffer + i + j) & *(ull *)(mask + j)) !=
+          *(ull *)(pattern + j)) {
         break;
       }
       j += 8;
     }
+    if (j < len) {
+      if ((*(ull *)(buffer + i + j) & *(ull *)(mask + j)) << (8 - len + j) ==
+          (*(ull *)(pattern + j)) << (8 - len + j)) {
+        j += 8;
+      }
+    }
+
     if (j >= len) {
       // we get a match
       // printf("%02X\n", i);
+      match *result = (match *)malloc(sizeof(match));
+      if (result == NULL) {
+        die("error allocating result buffer");
+      }
+      result->offset = g_base + i;
+      result->next = (match *)NULL;
+      g_rptr->next = result;
+      g_rptr = result;
     }
-    if (i + len < size) {
-      i += delta[buffer[i + len]];
-    }
-  }
-}
 
-void print_char(unsigned char c) {
-  if (32 <= c && c <= 126) {
-    putchar(c);
-  } else {
-    printf("\\x%02x", (int)c);
+    i += delta[buffer[i + len]];
   }
-}
-
-void die(const char *msg, ...) {
-  va_list ap;
-  va_start(ap, msg);
-  vfprintf(stderr, msg, ap);
-  fprintf(stderr, "\n");
-  va_end(ap);
-  exit(1);
 }
 
 void usage(char **argv) {
@@ -149,43 +158,54 @@ int g_pid;
 char *g_path;
 char *g_hex;
 
-#ifdef _WIN32
-
 handle_f open_file(char *path) {
+#ifdef _WIN32
   handle_f fileHandle =
       CreateFileA((LPCSTR)path, GENERIC_READ, FILE_SHARE_READ, NULL,
                   OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
   if (fileHandle == INVALID_HANDLE_VALUE) {
     die("cannot open file %s", path);
-  } else {
-    DWORD fileAttributes = GetFileAttributesA((LPCSTR)path);
-    if (fileAttributes == INVALID_FILE_ATTRIBUTES ||
-        (fileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
-      die("%s is not a regular file", path);
-    }
+  }
+  DWORD fileAttributes = GetFileAttributesA((LPCSTR)path);
+  if (fileAttributes == INVALID_FILE_ATTRIBUTES ||
+      (fileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
+    die("%s is not a regular file", path);
   }
   return fileHandle;
+#else
+  handle_f fd = open(path, O_RDONLY);
+  struct stat fst;
+  if (fstat(fd, &fst) == -1) {
+    die("cannot open file %s", path);
+  }
+  if (!S_ISREG(fst.st_mode) || S_ISDIR(fst.st_mode)) {
+    die("%s is not a regular file", path);
+  }
+  return fd;
+#endif
 }
 
-// universal file read API
-int read_file(handle_f hf, uc *buffer, int size) { return 0; }
-
-void close_file(handle_f hf) { CloseHandle(hf); }
-
+int read_file(handle_f hf, uc *buffer, int size) {
+#ifdef _WIN32
+  DWORD bytesRead = -1;
+  ReadFile(hf, buffer, size, &bytesRead, NULL);
+  return (int)bytesRead;
 #else
-
-handle_f open_file(char *path) {}
-
-// universal file read API
-int read_file(handle_f hf, uc *buffer, int size) { return 0; }
-
-void close_file(handle_f hf) { close(hf); }
-
+  return read(hf, buffer, size);
 #endif
+}
+
+void close_file(handle_f hf) {
+#ifdef _WIN32
+  CloseHandle(hf);
+#else
+  close(hf);
+#endif
+}
 
 void search_file(handle_f hf, uc *pattern, uc *mask, int len) {
   int size = 1024, ct;
-  while (size <= len) {
+  while (size < (len << 1)) {
     size <<= 1; // making a buffer twice the length of pattern
     if (size == 0) {
       die("error allocating search buffer");
@@ -196,22 +216,26 @@ void search_file(handle_f hf, uc *pattern, uc *mask, int len) {
     die("error allocating search buffer");
   }
 
-  if (ct = read_file(hf, buffer, size) > 0) {
-    search(buffer, buffer + ct, pattern, mask, len);
-    if (ct == size) {
+  if ((ct = read_file(hf, buffer, size)) > 0) {
+    g_base = (ull)0; // set base of the results
+    search(buffer, ct, pattern, mask, len);
+    if (ct >= size) {
       do {
         memmove(buffer, buffer + size - (len - 1), len - 1);
         if ((ct = read_file(hf, buffer + len - 1, size - (len - 1))) > 0) {
+          g_base += size - (len - 1); // set base of the results
           search(buffer, ct + len - 1, pattern, mask, len);
         }
-      } while (ct <= 0);
+      } while (ct >= size - (len - 1));
     }
   }
 
   free(buffer);
 }
 
-typedef enum {
+void dump_context(handle_f hf, ull offset) { printf("\n"); }
+
+typedef enum parse_stat {
   PARSE_RST,
   PARSE_BAFTER,
   PARSE_BBEFORE,
@@ -221,16 +245,18 @@ typedef enum {
   PARSE_HEX
 } parse_stat;
 
-struct {
+typedef struct opt_arg {
   const char *abbr;
   const char *repr;
   parse_stat opt;
-} g_options[] = {{"-p", "--pid", PARSE_PID},
-                 {"-f", "--file", PARSE_PATH},
-                 {"-a", "--bytes-after", PARSE_BAFTER},
-                 {"-b", "--bytes-before", PARSE_BBEFORE},
-                 {"-c", "--bytes-count", PARSE_BCOUNT},
-                 {NULL, NULL, (parse_stat)0}};
+} opt_arg;
+
+opt_arg g_opts[] = {{"-p", "--pid", PARSE_PID},
+                    {"-f", "--file", PARSE_PATH},
+                    {"-a", "--bytes-after", PARSE_BAFTER},
+                    {"-b", "--bytes-before", PARSE_BBEFORE},
+                    {"-c", "--bytes-count", PARSE_BCOUNT},
+                    {NULL, NULL, (parse_stat)0}};
 
 void parse_opts(int argc, char **argv) {
   int i = 1, j, k;
@@ -240,12 +266,12 @@ void parse_opts(int argc, char **argv) {
     switch (stat) {
     case PARSE_RST:
       if (argv[i][0] == '-') {
-        for (k = 0; k < sizeof(g_options) / sizeof(g_options[0]); k++) {
-          if (g_options[k].opt == 0) {
+        for (k = 0; k < sizeof(g_opts) / sizeof(g_opts[0]); k++) {
+          if (g_opts[k].opt == 0) {
             usage(argv);
-          } else if (strcmp(argv[i], g_options[k].abbr) == 0 ||
-                     strcmp(argv[i], g_options[k].repr) == 0) {
-            stat = g_options[k].opt;
+          } else if (strcmp(argv[i], g_opts[k].abbr) == 0 ||
+                     strcmp(argv[i], g_opts[k].repr) == 0) {
+            stat = g_opts[k].opt;
             break;
           }
         }
@@ -324,6 +350,9 @@ void parse_opts(int argc, char **argv) {
   if (g_pid == 0 && g_path == NULL) {
     die("must specify one of pid and path");
   }
+  if (g_hex == NULL) {
+    die("empty hex string");
+  }
 }
 
 int main(int argc, char **argv) {
@@ -341,36 +370,46 @@ int main(int argc, char **argv) {
   }
 
   int len = 0;
-  uc *j = (uc *)g_hex, j0, j1;
+  uc *j = (uc *)g_hex, x;
   while (*j && len < plen) {
     if (*j == ' ') {
       j++;
       continue;
     }
     // ascii to hex
-    if (*j != '?') {
-      j1 = (*j & 0xf) + ((*j >> 6) & 0xa);
-      pattern[len] |= j1 << 4;
+    x = *j++;
+    if (x != '?') {
+      x = (x & 0xf) + (((char)(x << 1) >> 7) & 0x9);
+      pattern[len] |= x << 4;
       mask[len] |= 0xf0;
     }
-    if (*(j + 1) != '?') {
-      j0 = (*(j + 1) & 0xf) + ((*(j + 1) >> 6) & 0xa);
-      pattern[len] |= j0;
-      mask[len++] |= 0xf;
+    x = *j++;
+    if (x != '?') {
+      x = (x & 0xf) + (((char)(x << 1) >> 7) & 0x9);
+      pattern[len] |= x;
+      mask[len] |= 0xf;
     }
-    j += 2;
+    len++;
   }
 
-  if (g_pid == 0) {
+  if (g_pid != 0) {
     // virtual bgrep
   } else {
     // physical bgrep
-  }
+    handle_f hf = open_file(g_path);
+    search_file(hf, pattern, mask, len);
 
-  printf("bytes_after: %d\nbytes_before: %d\npid: %d\npath: %s\nhex: %s\n",
-         g_bytes_after, g_bytes_before, g_pid, g_path, g_hex);
+    g_rptr = g_results.next;
+    match *tptr;
+    while (g_rptr != NULL) {
+      tptr = g_rptr;
+      g_rptr = g_rptr->next;
+      printf("%016llX: ", tptr->offset);
+      dump_context(hf, tptr->offset);
+      free(tptr);
+    }
 
-  for (j = 0; j < len; j++) {
+    close_file(hf);
   }
 
   free(pattern);
