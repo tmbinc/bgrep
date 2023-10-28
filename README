@@ -10,17 +10,17 @@ grammar to simplify the code.
 
 Feel free to modify, branch, fork, improve. Re-licenses as BSD.
 
-usage: bgrep [options] <hex>
+usage: bgrep -[pfrv] [-l limit] <hex> <target>
 options:
-  -a, --bytes-after [length]: bytes to show after the match
-  -b, --bytes-before [length]: bytes to show before the match
-  -c, --bytes-count  [length]: bytes to show before and after
-  -p, --pid [pid]: id of process to search
-  -f, --file [path]: path of file to search
+  -p, --process: virtual mode, <target> is pid
+  -f, --file: physical mode (default), <target> is path of file
+  -r, --reverse: reversed search
+  -v, --verbose: show both address and binary
+  -l, --limit [count]: max number of results to show
 
 The hex string is made up of 0-9, a-f, A-F and wildcard ?. Spaces are
 allowed to avoid mistakes.
 
-an example to find x86 function prefixes in process 123:
+an example to find x86 function prefixes in process 9999:
 
-bgrep -a 10 "5589e5??" -p 123
+bgrep --process --limit 10 "5589e5??" 9999

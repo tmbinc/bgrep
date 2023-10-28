@@ -38,13 +38,24 @@
 #define BGREP_VERSION "0.3"
 #define BUFFER_SIZE 1024
 
+#define MODE_PROCESS 0x01
+#define MODE_VERBOSE 0x10
+#define MODE_REVERSE 0x20
+#define MODE_QUICK 0x40
+
 typedef unsigned char uc;
 typedef unsigned long long ull;
+typedef long long ll;
 
 #ifdef _WIN32
 #include <windows.h>
 
-typedef HANDLE handle_f;
+typedef struct target {
+  HANDLE id;
+  QWORD begin;
+  QWORD end;
+  QWORD curr;
+}
 
 #else
 
@@ -55,9 +66,53 @@ typedef HANDLE handle_f;
 #include <sys/stat.h>
 #include <sys/types.h>
 
-typedef int handle_f;
+typedef struct target {
+  int id;
+  ull begin;
+  ull end;
+  ull curr;
+} target;
 
 #endif
+
+typedef enum parse_stat {
+  PARSE_OPT,
+  PARSE_PROC,
+  PARSE_FILE,
+  PARSE_REV,
+  PARSE_VERBO,
+  PARSE_LIM,
+  PARSE_HEX,
+  PARSE_TARGET
+} parse_stat;
+
+typedef struct opt {
+  const char *abbr;
+  const char *repr;
+  parse_stat opt;
+} opt;
+
+opt g_opts[] = {
+    {"-p", "--process", PARSE_PROC}, {"-f", "--file", PARSE_FILE},
+    {"-r", "--reverse", PARSE_REV},  {"-v", "--verbose", PARSE_VERBO},
+    {"-l", "--limit", PARSE_LIM},    {NULL, NULL, (parse_stat)0}};
+
+char *g_hex;
+char *g_target;
+int g_mode;
+int g_limit;
+
+void usage(char **argv) {
+  printf("bgrep version: %s\n", BGREP_VERSION);
+  printf("usage: bgrep -[pfrv] [-l limit] <hex> <target>\n");
+  printf("options:\n");
+  printf("  -p, --process: virtual mode, <target> is pid\n");
+  printf("  -f, --file: physical mode (default), <target> is path of file\n");
+  printf("  -r, --reverse: reversed search\n");
+  printf("  -v, --verbose: show both address and binary\n");
+  printf("  -l, --limit [count]: max number of results to show\n");
+  exit(1);
+}
 
 void die(const char *msg, ...) {
   va_list ap;
@@ -68,28 +123,184 @@ void die(const char *msg, ...) {
   exit(1);
 }
 
-typedef struct match {
-  ull offset;
-  struct match *next;
-} match;
+target *open_target(char *repr) {
+  if (g_mode & MODE_PROCESS) {
+    target *process = (target *)malloc(sizeof(target));
+#ifdef _WIN32
+    // todo: win proc
+#else
+    // todo: linux proc
+#endif
+    return process;
+  } else {
+    target *file = (target *)malloc(sizeof(target));
+#ifdef _WIN32
+    file->id = CreateFileA((LPCSTR)path, GENERIC_READ, FILE_SHARE_READ, NULL,
+                           OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (file->id == INVALID_HANDLE_VALUE) {
+      die("cannot open file %s", repr);
+    }
 
-ull g_base;
-match g_results = {(ull)0, (match *)NULL};
-match *g_rptr = &g_results;
+    DWORD fileAttributes = GetFileAttributesA((LPCSTR)path);
+    if (fileAttributes == INVALID_FILE_ATTRIBUTES ||
+        (fileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
+      die("%s is not a regular file", repr);
+    }
+
+    file->begin = file->curr = (QWORD)0;
+    if (!GetFileSizeEx(file->id, (LARGE_INTEGER *)&file->end)) {
+      die("%s is not a regular file", repr);
+    }
+    return file;
+#else
+    target *file = open(repr, O_RDONLY);
+    struct stat fst;
+    if (fstat(file->id, &fst) == -1) {
+      die("cannot open file %s", repr);
+    }
+
+    if (!S_ISREG(fst.st_mode) || S_ISDIR(fst.st_mode)) {
+      die("%s is not a regular file", repr);
+    }
+
+    file->begin = file->curr = (ull)0;
+    file->end = fst.st_size;
+    return file;
+#endif
+  }
+}
+
+int read_target(target *any, uc *buffer, int size) {
+  if (g_mode & MODE_PROCESS) {
+#ifdef _WIN32
+    // todo: win proc
+#else
+    // todo: linux proc
+#endif
+    return 0;
+  } else {
+#ifdef _WIN32
+    DWORD bytesRead = -1;
+    if (any->curr + size > any->end) {
+      ReadFile(any->id, buffer, any->end - any->curr, &bytesRead, NULL);
+    } else {
+      ReadFile(any->id, buffer, size, &bytesRead, NULL);
+    }
+    any->curr += ct;
+    return (int)bytesRead;
+#else
+    int ct;
+    if (any->curr + size > any->end) {
+      ct = read(any->id, buffer, any->end - any->curr);
+    } else {
+      ct = read(any->id, buffer, size);
+    }
+    any->curr += ct;
+    return ct;
+#endif
+  }
+}
+
+void close_target(target *any) {
+  if (g_mode & MODE_PROCESS) {
+#ifdef _WIN32
+    // todo: win proc
+#else
+    // todo: linux proc
+#endif
+  } else {
+#ifdef _WIN32
+    CloseHandle(any->id);
+#else
+    close(any->id);
+#endif
+  }
+  free(any);
+}
+
+ull seek_target(target *any, ll offset) {
+  ull pos = 0;
+  if (offset >= 0) {
+    pos = any->begin + offset;
+    if (pos > any->end) {
+      pos = any->end;
+    }
+  } else {
+    pos = any->end + offset;
+    if (pos < any->begin) {
+      pos = any->begin;
+    }
+  }
+
+  if (g_mode & MODE_PROCESS) {
+#ifdef _WIN32
+    // todo: win proc
+#else
+    // todo: linux proc
+#endif
+    return any->begin;
+  }
+#ifdef _WIN32
+  LARGE_INTEGER newPos, newCurr;
+  newPos.QuadPart = pos;
+  if (!SetFilePointerEx(file->id, newPos, &newCurr, FILE_BEGIN)) {
+    die("error setting read pointer");
+  } else {
+    any->curr = (ull)newCurr.QuadPart;
+  }
+#else
+  ll curr = lseek(any->id, pos, SEEK_SET);
+  if (curr == -1) {
+    die("error setting read pointer");
+  } else {
+    any->curr = curr;
+  }
+#endif
+}
+
+// 8-byte group matching
+int match(uc *buffer, ull vbase, int i, uc *pattern, uc *mask, int len) {
+  int j = 0;
+  while (j <= len - 8) {
+    if ((*(ull *)(buffer + i + j) & *(ull *)(mask + j)) !=
+        *(ull *)(pattern + j)) {
+      break;
+    }
+    j += 8;
+  }
+  if (j < len) {
+    if ((*(ull *)(buffer + i + j) & *(ull *)(mask + j)) << (8 - len + j) ==
+        (*(ull *)(pattern + j)) << (8 - len + j)) {
+      j += 8;
+    }
+  }
+
+  if (j >= len) {
+    // we get a match
+    printf("%016llX: ", vbase + i);
+    for (j = 0; j < len; j++) {
+      printf("%02X ", buffer[i + j]);
+    }
+    printf("\n");
+    return 1;
+  } else {
+    return 0;
+  }
+}
 
 // Sunday algorithm, modified for masked pattern
-void search(uc *buffer, int size, uc *pattern, uc *mask, int len) {
+void search(uc *buffer, ull vbase, int size, uc *pattern, uc *mask, int len) {
   if (size < len) {
     return;
   }
 
-  int i, j, c, delta[256];
-  uc M, m;
-  for (c = 0; c <= 0xff; c++) {
-    delta[c] = len + 1;
+  int i, j, k, delta[256];
+  for (k = 0; k <= 0xff; k++) {
+    delta[k] = len + 1;
   }
 
   // preprocessing
+  uc M, m;
   for (j = 0; j < len; j++) {
     if (mask[j] == 0xff) {
       delta[pattern[j]] = len - j;
@@ -98,289 +309,241 @@ void search(uc *buffer, int size, uc *pattern, uc *mask, int len) {
       while ((m | M) != M) {
         m <<= 1;
       }
-      for (c = 0; c <= M; c += m) {
-        if ((c | M) == M) {
-          delta[c | pattern[j]] = len - j;
+      for (k = 0; k <= M; k += m) {
+        if ((k | M) == M) {
+          delta[k | pattern[j]] = len - j;
         }
       }
     }
   }
 
-  // grouped by 8 bytes
   i = 0;
-  while (size - i >= len) {
-    j = 0;
-    while (j <= len - 8) {
-      if ((*(ull *)(buffer + i + j) & *(ull *)(mask + j)) !=
-          *(ull *)(pattern + j)) {
-        break;
-      }
-      j += 8;
-    }
-    if (j < len) {
-      if ((*(ull *)(buffer + i + j) & *(ull *)(mask + j)) << (8 - len + j) ==
-          (*(ull *)(pattern + j)) << (8 - len + j)) {
-        j += 8;
+  if (g_mode & MODE_QUICK) {
+    while (g_limit && size - i >= len) {
+      g_limit -= match(buffer, vbase, i, pattern, mask, len);
+      if (i + len < size) {
+        i += delta[buffer[i + len]];
       }
     }
-
-    if (j >= len) {
-      // we get a match
-      // printf("%02X\n", i);
-      match *result = (match *)malloc(sizeof(match));
-      if (result == NULL) {
-        die("error allocating result buffer");
+  } else {
+    while (size - i >= len) {
+      match(buffer, vbase, i, pattern, mask, len);
+      if (i + len < size) {
+        i += delta[buffer[i + len]];
       }
-      result->offset = g_base + i;
-      result->next = (match *)NULL;
-      g_rptr->next = result;
-      g_rptr = result;
     }
-
-    i += delta[buffer[i + len]];
   }
 }
 
-void usage(char **argv) {
-  printf("bgrep version: %s\n", BGREP_VERSION);
-  printf("usage: bgrep [options] <hex>\n");
-  printf("options:\n");
-  printf("  -a, --bytes-after [length]: bytes to show after the match\n");
-  printf("  -b, --bytes-before [length]: bytes to show before the match\n");
-  printf("  -c, --bytes-count [length]: bytes to show before and after\n");
-  printf("  -p, --pid [pid]: id of process to read\n");
-  printf("  -f, --file [path]: path of file to read\n");
-  exit(1);
-}
-
-int g_bytes_after;
-int g_bytes_before;
-int g_pid;
-char *g_path;
-char *g_hex;
-
-handle_f open_file(char *path) {
-#ifdef _WIN32
-  handle_f fileHandle =
-      CreateFileA((LPCSTR)path, GENERIC_READ, FILE_SHARE_READ, NULL,
-                  OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-  if (fileHandle == INVALID_HANDLE_VALUE) {
-    die("cannot open file %s", path);
+// reversed Sunday
+void rsearch(uc *buffer, ull vbase, int size, uc *pattern, uc *mask, int len) {
+  if (size < len) {
+    return;
   }
-  DWORD fileAttributes = GetFileAttributesA((LPCSTR)path);
-  if (fileAttributes == INVALID_FILE_ATTRIBUTES ||
-      (fileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
-    die("%s is not a regular file", path);
-  }
-  return fileHandle;
-#else
-  handle_f fd = open(path, O_RDONLY);
-  struct stat fst;
-  if (fstat(fd, &fst) == -1) {
-    die("cannot open file %s", path);
-  }
-  if (!S_ISREG(fst.st_mode) || S_ISDIR(fst.st_mode)) {
-    die("%s is not a regular file", path);
-  }
-  return fd;
-#endif
-}
 
-int read_file(handle_f hf, uc *buffer, int size) {
-#ifdef _WIN32
-  DWORD bytesRead = -1;
-  ReadFile(hf, buffer, size, &bytesRead, NULL);
-  return (int)bytesRead;
-#else
-  return read(hf, buffer, size);
-#endif
-}
-
-void close_file(handle_f hf) {
-#ifdef _WIN32
-  CloseHandle(hf);
-#else
-  close(hf);
-#endif
-}
-
-void seek_file(handle_f hf, ull pos) {
-#ifdef _WIN32
-  if (!SetFilePointerEx(hf, (LARGE_INTEGER)pos, NULL, FILE_BEGIN)) {
-    die("error setting file pointer");
+  int i, j, k, delta[256];
+  for (k = 0; k <= 0xff; k++) {
+    delta[k] = len + 1;
   }
-#else
-  if (lseek(hf, pos, SEEK_SET) == -1) {
-    die("error setting file pointer");
-  }
-#endif
-}
 
-void dump_context(handle_f hf, ull offset) {
-  uc context[BUFFER_SIZE];
-  ull pos = offset > g_bytes_before ? offset - g_bytes_before : 0;
-  int to_read = offset - pos + g_bytes_after;
-  int ct = 0, j;
-
-  seek_file(hf, pos);
-  do {
-    ct = read_file(hf, context, to_read > BUFFER_SIZE ? BUFFER_SIZE : to_read);
-    for (j = 0; j < ct; j++) {
-      printf("%02X ", context[j]);
+  // preprocessing
+  uc M, m;
+  for (j = len - 1; j >= 0; j--) {
+    if (mask[j] == 0xff) {
+      delta[pattern[j]] = j + 1;
+    } else {
+      M = ~mask[j], m = 1;
+      while ((m | M) != M) {
+        m <<= 1;
+      }
+      for (k = 0; k <= M; k += m) {
+        if ((k | M) == M) {
+          delta[k | pattern[j]] = j + 1;
+        }
+      }
     }
-    to_read -= ct;
-  } while (ct > 0);
+  }
 
-  printf("\n");
+  i = size - len;
+  if (g_mode & MODE_QUICK) {
+    while (g_limit && i >= 0) {
+      g_limit -= match(buffer, vbase, i, pattern, mask, len);
+      if (i > 0) {
+        i -= delta[buffer[i - 1]];
+      }
+    }
+  } else {
+    while (i >= 0) {
+      match(buffer, vbase, i, pattern, mask, len);
+      if (i > 0) {
+        i -= delta[buffer[i - 1]];
+      }
+    }
+  }
 }
 
-void search_file(handle_f hf, uc *pattern, uc *mask, int len) {
+// search the target block by block
+void search_target(target *any, uc *pattern, uc *mask, int len) {
+  ull to_read = any->end - any->begin, readed = 0;
+  ull prev;
+  if (to_read < len) {
+    return;
+  }
+
   int size = BUFFER_SIZE, ct;
-  while (size < (len << 1)) {
-    size <<= 1; // making a buffer twice the length of pattern
+  while (size < (len << 2)) {
+    size <<= 1; // making a buffer 4 times the length of pattern
     if (size == 0) {
       die("error allocating search buffer");
     }
   }
+
   uc *buffer = (uc *)memset(malloc(size), 0, size);
   if (buffer == NULL) {
     die("error allocating search buffer");
   }
 
-  if ((ct = read_file(hf, buffer, size)) > 0) {
-    g_base = (ull)0; // set base of the results
-    search(buffer, ct, pattern, mask, len);
-    if (ct >= size) {
-      do {
-        memmove(buffer, buffer + size - (len - 1), len - 1);
-        if ((ct = read_file(hf, buffer + len - 1, size - (len - 1))) > 0) {
-          g_base += size - (len - 1); // set base of the results
-          search(buffer, ct + len - 1, pattern, mask, len);
+  if (g_mode & MODE_REVERSE) {
+    seek_target(any, -size);
+    prev = any->curr;
+    ct = read_target(any, buffer, size);
+
+    if (ct >= to_read) {
+      rsearch(buffer, prev, to_read, pattern, mask, len);
+    } else if (ct == size) {
+
+      while (g_limit) {
+        to_read -= ct;
+        readed += ct;
+
+        seek_target(any, -(readed + size - (len - 1)));
+        prev = any->curr;
+        ct = read_target(any, buffer, size);
+
+        if (ct >= to_read) {
+          rsearch(buffer, prev, to_read + len - 1, pattern, mask, len);
+          break;
+        } else if (ct == size) {
+          rsearch(buffer, prev, size, pattern, mask, len);
+        } else {
+          die("inconsistency during searching");
         }
-      } while (ct >= size - (len - 1));
+      }
+    } else {
+      die("inconsistency during searching");
+    }
+
+  } else {
+    seek_target(any, (ll)0);
+    prev = any->curr;
+    ct = read_target(any, buffer, size);
+
+    if (ct >= to_read) {
+      search(buffer, prev, to_read, pattern, mask, len);
+    } else if (ct == size) {
+
+      while (g_limit) {
+        to_read -= ct;
+        readed += ct;
+
+        memmove(buffer, buffer + size - (len - 1), len - 1);
+        prev = any->curr;
+        ct = read_target(any, buffer + len - 1, size - (len - 1));
+
+        if (ct >= to_read) {
+          search(buffer, prev, to_read + len - 1, pattern, mask, len);
+          break;
+        } else if (ct == size - (len - 1)) {
+          search(buffer, prev, size, pattern, mask, len);
+        } else {
+          die("inconsistency during searching");
+        }
+      }
+    } else {
+      die("inconsistency during searching");
     }
   }
 
   free(buffer);
 }
 
-typedef enum parse_stat {
-  PARSE_RST,
-  PARSE_BAFTER,
-  PARSE_BBEFORE,
-  PARSE_BCOUNT,
-  PARSE_PID,
-  PARSE_PATH,
-  PARSE_HEX
-} parse_stat;
-
-typedef struct opt_arg {
-  const char *abbr;
-  const char *repr;
-  parse_stat opt;
-} opt_arg;
-
-opt_arg g_opts[] = {{"-p", "--pid", PARSE_PID},
-                    {"-f", "--file", PARSE_PATH},
-                    {"-a", "--bytes-after", PARSE_BAFTER},
-                    {"-b", "--bytes-before", PARSE_BBEFORE},
-                    {"-c", "--bytes-count", PARSE_BCOUNT},
-                    {NULL, NULL, (parse_stat)0}};
-
 void parse_opts(int argc, char **argv) {
   int i = 1, j, k;
-  parse_stat stat = PARSE_RST;
+  parse_stat stat = PARSE_OPT;
 
   while (i < argc) {
     switch (stat) {
-    case PARSE_RST:
+    case PARSE_OPT:
       if (argv[i][0] == '-') {
         for (k = 0; k < sizeof(g_opts) / sizeof(g_opts[0]); k++) {
-          if (g_opts[k].opt == 0) {
+          if (g_opts[k].opt == (parse_stat)0) {
             usage(argv);
-          } else if (strcmp(argv[i], g_opts[k].abbr) == 0 ||
-                     strcmp(argv[i], g_opts[k].repr) == 0) {
+          } else if (!strcmp(argv[i], g_opts[k].abbr) ||
+                     !strcmp(argv[i], g_opts[k].repr)) {
             stat = g_opts[k].opt;
             break;
           }
         }
         i++;
-      } else {
+      } else if (g_hex == NULL) {
         stat = PARSE_HEX;
+      } else if (g_target == NULL) {
+        stat = PARSE_TARGET;
+      } else {
+        usage(argv);
       }
       break;
     case PARSE_HEX:
-      if (g_hex != NULL) {
+      g_hex = argv[i];
+      for (j = 0; g_hex[j]; j++) {
+        if (g_hex[j] == '?' || g_hex[j] == ' ') {
+          continue;
+        } else if (g_hex[j] >= '0' && g_hex[j] <= '9') {
+          continue;
+        } else if (g_hex[j] >= 'a' && g_hex[j] <= 'f') {
+          continue;
+        } else if (g_hex[j] >= 'A' && g_hex[j] <= 'F') {
+          continue;
+        }
+        die("invalid hex string");
+      }
+      if (j % 2 == 1 || j == 0) {
+        die("invalid/empty hex string");
+      }
+      goto next_opt;
+    case PARSE_TARGET:
+      g_target = argv[i];
+      goto next_opt;
+    case PARSE_PROC:
+      g_mode |= MODE_PROCESS;
+      goto next_opt;
+    case PARSE_FILE:
+      if (g_mode & MODE_PROCESS) {
         usage(argv);
-      } else {
-        g_hex = argv[i];
-        for (j = 0; g_hex[j]; j++) {
-          if (g_hex[j] == '?' || g_hex[j] == ' ') {
-            continue;
-          } else if (g_hex[j] >= '0' && g_hex[j] <= '9') {
-            continue;
-          } else if (g_hex[j] >= 'a' && g_hex[j] <= 'f') {
-            continue;
-          } else if (g_hex[j] >= 'A' && g_hex[j] <= 'F') {
-            continue;
-          }
-          die("invalid hex string");
-        }
-        if (j % 2 == 1 || j == 0) {
-          die("invalid/empty hex string");
-        }
-        goto next_opt;
-      }
-    case PARSE_BAFTER:
-      g_bytes_after = atoi(argv[i]);
-      if (g_bytes_after <= 0) {
-        die("invalid value %s for bytes after", argv[i]);
       }
       goto next_opt;
-    case PARSE_BBEFORE:
-      g_bytes_before = atoi(argv[i]);
-      if (g_bytes_before <= 0) {
-        die("invalid value %s for bytes after", argv[i]);
-      }
+    case PARSE_REV:
+      g_mode |= MODE_REVERSE;
       goto next_opt;
-    case PARSE_BCOUNT:
-      g_bytes_after = g_bytes_before = atoi(argv[i]);
-      if (g_bytes_after <= 0) {
-        die("invalid value %s for bytes after", argv[i]);
-      } else if (g_bytes_before <= 0) {
-        die("invalid value %s for bytes after", argv[i]);
-      }
+    case PARSE_VERBO:
+      g_mode |= MODE_VERBOSE;
       goto next_opt;
-    case PARSE_PID:
-      if (g_path != NULL) {
-        die("cannot specify both pid and path");
-      } else {
-        g_pid = atoi(argv[i]);
-        if (g_pid <= 0) {
-          die("invalid value %s for pid", argv[i]);
-        }
-      }
-      goto next_opt;
-    case PARSE_PATH:
-      if (g_pid != 0) {
-        die("cannot specify both pid and path");
-      } else {
-        g_path = argv[i];
+    case PARSE_LIM:
+      g_mode |= MODE_QUICK;
+      g_limit = atoi(argv[i]);
+      if (g_limit <= 0) {
+        die("invalid value %s for search limit", argv[i]);
       }
     next_opt:
       i++;
-      stat = PARSE_RST;
+      stat = PARSE_OPT;
       break;
     default:
       die("unknown error");
     }
   }
-  // must specify one of pid and path
-  if (g_pid == 0 && g_path == NULL) {
-    die("must specify one of pid and path");
-  }
-  if (g_hex == NULL) {
-    die("empty hex string");
+  if (g_hex == NULL || g_target == NULL) {
+    usage(argv);
   }
 }
 
@@ -421,25 +584,9 @@ int main(int argc, char **argv) {
     len++;
   }
 
-  if (g_pid != 0) {
-    // virtual bgrep
-  } else {
-    // physical bgrep
-    handle_f hf = open_file(g_path);
-    search_file(hf, pattern, mask, len);
-
-    g_rptr = g_results.next;
-    match *tptr;
-    while (g_rptr != NULL) {
-      tptr = g_rptr;
-      g_rptr = g_rptr->next;
-      printf("%016llX: ", tptr->offset);
-      dump_context(hf, tptr->offset);
-      free(tptr);
-    }
-
-    close_file(hf);
-  }
+  target *any = open_target(g_target);
+  search_target(any, pattern, mask, len);
+  close_target(any);
 
   free(pattern);
   free(mask);
