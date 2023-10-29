@@ -44,19 +44,23 @@ typedef short i16;
 typedef int i32;
 typedef long long i64;
 
-#define BGREP_VER "0.3"
-#define BGREP_PHY_BLK_SIZE 512
-#define BGREP_VIRT_BLK_SIZE 4096
+#define BGREP_VERSION "0.3"
+#define PBLOCK_SIZE 512
+#define VBLOCK_SIZE 4096
+#define VMEM_BEGIN 0LL
+#define VMEM_END (1LL << 63)
 
 #ifdef _WIN32
+
 #include <Windows.h>
 
-typedef struct target {
+// universal io object, including an id number and 3 pointers
+typedef struct ioobj {
   HANDLE id;
   u64 begin;
   u64 end;
   u64 curr;
-} target;
+} ioobj;
 
 #else
 
@@ -69,40 +73,39 @@ typedef struct target {
 #include <sys/types.h>
 #include <sys/uio.h>
 
-typedef struct target {
+// universal io object, including an id number and 3 pointers
+typedef struct ioobj {
   int id;
   u64 begin;
   u64 end;
   u64 curr;
-} target;
+} ioobj;
 
 #endif
+
+u8 flag_process;
+u8 flag_reverse;
+u8 flag_verbose;
+u8 flag_quick;
+
+u32 limit; // max number of search results
+char *limit_str;
 
 typedef struct option {
   char *str;
   char *abbr;
   u8 *flag;
-  char *param;
+  char **param;
 } option;
-
-u8 flag_process;
-u8 flag_reverse;
-u8 flag_verbose;
-u8 flag_limit;
-u32 limit;
-
-char *limit_str;
-char *target_str;
-char *hex_str;
 
 option opts[] = {{"process", "p", &flag_process, NULL},
                  {"reverse", "r", &flag_reverse, NULL},
                  {"verbose", "v", &flag_verbose, NULL},
-                 {"limit", "l", &flag_limit, &limit_str},
+                 {"limit", "l", &flag_quick, &limit_str},
                  {NULL, NULL, NULL, NULL}};
 
-void usage(char **argv) {
-  fprintf(stderr, "bgrep version: %s\n", BGREP_VER);
+void usage() {
+  fprintf(stderr, "bgrep version: %s\n", BGREP_VERSION);
   fprintf(stderr, "usage: bgrep -[prv] [-l count] <hex> <target>\n");
   fprintf(stderr, "options:\n");
   fprintf(stderr, "  -p, --process: <target> is pid instead of file path\n");
@@ -121,169 +124,196 @@ void die(const char *msg, ...) {
   exit(1);
 }
 
-// abstract layer of opening
-target *open_target(char *repr) {
-  if (flag_process) {
-    int pid = atoi(repr);
-    if (pid <= 0) {
-      die("cannot open process %s", repr);
-    }
-    target *process = (target *)malloc(sizeof(target));
+// abstract layer of opening, return null on error
+ioobj *open_object(char *repr) {
+
 #ifdef _WIN32
+
+  if (flag_process) {
+    ioobj *process = (ioobj *)malloc(sizeof(ioobj));
+
+    // enable PROCESS_QUERY_INFORMATION for VirtualQueryEx
     process->id = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ,
-                              FALSE, (DWORD)pid);
+                              FALSE, atoi(repr));
     if (process->id == NULL) {
-      die("cannot open process %s", repr);
+      return NULL;
     }
 
-    // set the target to code section
-    u64 ptr = 0, sec_size;
-    while (1) {
-      MEMORY_BASIC_INFORMATION mbi = {0};
-      sec_size = VirtualQueryEx(process->id, ptr, &mbi,
-                                sizeof(MEMORY_BASIC_INFORMATION));
-      if (!sec_size) {
-        die("cannot open process %s", repr);
-        break;
-      } else {
-        // break on the code section
-        if (mbi.State == MEM_COMMIT && mbi.State == MEM_IMAGE) {
-          if (mbi.Protect == PAGE_EXECUTE_READ ||
-              mbi.Protect == PAGE_EXECUTE_READWRITE) {
-            process->begin = process->curr = ptr;
-            process->end = process->begin + mbi.RegionSize;
-            break;
-          }
-        }
+    // set io object to code section
+    u64 pAddress = VMEM_BEGIN;
+    MEMORY_BASIC_INFORMATION mbi;
+    while (pAddress < VMEM_END) {
+
+      memset(&mbi, 0, sizeof(mbi));
+      if (!VirtualQueryEx(process->id, pAddress, &mbi, sizeof(mbi))) {
+        return NULL;
       }
 
-      ptr = mbi.BaseAddress + mbi.RegionSize;
-    }
-#else
-    process->id = pid;
+      /* iteration stops upon the first code section
+       * normally, it's the .text section of main program
+       * however sometimes it's not the case especially for some handmade PEs,
+       * which requires further research */
+      if (mbi.State == MEM_COMMIT && mbi.State == MEM_IMAGE &&
+          (mbi.Protect == PAGE_EXECUTE_READ ||
+           mbi.Protect == PAGE_EXECUTE_READWRITE)) {
+        process->begin = process->curr = (u64)mbi.BaseAddress;
+        process->end = process->begin + mbi.RegionSize;
+        break;
+      }
 
-    char *buffer_file[32], buffer_line[256];
-    sprintf(buffer_file, "/proc/%lld/maps", process->id);
-    // set the target to code section
-    int fd_maps = open(buffer_file, O_RDONLY);
-    // todo: search for the code section;
-    close(fd_maps);
-#endif
+      // calculate the next possible
+      pAddress = (u64)mbi.BaseAddress + mbi.RegionSize;
+    }
+
     return process;
+
   } else {
-    target *file = (target *)malloc(sizeof(target));
-#ifdef _WIN32
-    file->id = CreateFileA((LPCSTR)repr, GENERIC_READ, FILE_SHARE_READ, NULL,
+    ioobj *file = (ioobj *)malloc(sizeof(ioobj));
+
+    file->id = CreateFileA(repr, GENERIC_READ, FILE_SHARE_READ, NULL,
                            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
     if (file->id == INVALID_HANDLE_VALUE) {
-      die("cannot open file %s", repr);
+      return -1;
     }
 
     // refuse to touch directories
-    DWORD fileAttributes = GetFileAttributesA((LPCSTR)repr);
+    DWORD fileAttributes = GetFileAttributesA(repr);
     if (fileAttributes == INVALID_FILE_ATTRIBUTES ||
         (fileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
-      die("%s is not a regular file", repr);
+      return NULL;
     }
 
-    // for files we set the search boundry to [0, size of file)
+    // for files we set the search boundry to (0, size of file)
+    LARGE_INTEGER fileSize;
     file->begin = file->curr = 0LL;
-    if (!GetFileSizeEx(file->id, (LARGE_INTEGER *)&file->end)) {
-      die("%s is not a regular file", repr);
+    if (!GetFileSizeEx(file->id, &fileSize)) {
+      return -1;
     }
+
+    file->end = fileSize.QuadPart;
     return file;
+  }
+
 #else
-    target *file = open(repr, O_RDONLY);
+
+  if (flag_process) {
+    ioobj *process = (ioobj *)malloc(sizeof(ioobj));
+
+    /* for linux processes we can't get process information with APIs unless we
+     * use ptrace to debug it
+     * to get process's memory map we have to parse /proc/<pid>/maps */
+    process->id = atoi(repr);
+    sprintf(map_file, "/proc/%lld/maps", process->id);
+    int fd_maps = open(map_file, O_RDONLY);
+    if (fd_maps == -1) {
+      return -1;
+    }
+
+    char *map_file[32], buffer_line[256];
+    // search process map and set io object to code section
+    /* todo */
+    process->begin = process->curr = 0;
+    process->end = 0;
+
+    close(fd_maps);
+    return process;
+
+  } else {
+    ioobj *file = (ioobj *)malloc(sizeof(ioobj));
+
+    file->id = open(repr, O_RDONLY);
     struct stat fst;
     if (fstat(file->id, &fst) == -1) {
-      die("cannot open file %s", repr);
+      return -1;
     }
 
     // refuse to touch directories
     if (!S_ISREG(fst.st_mode) || S_ISDIR(fst.st_mode)) {
-      die("%s is not a regular file", repr);
+      return -1;
     }
 
-    // for files we set the search boundry to [0, size of file)
-    file->begin = file->curr = (ull)0;
+    // for files we set the search boundry to (0, size of file)
+    file->begin = file->curr = 0LL;
     file->end = fst.st_size;
     return file;
-#endif
   }
+
+#endif
 }
 
-// abstract layer of reading
-u32 read_target(target *any, u8 *buffer, u32 size) {
+// abstract layer of reading, return -1 on error
+u32 read_object(ioobj *any, u8 *buffer, u32 size) {
+
+#ifdef _WIN32
+
+  DWORD bytesRead = 0;
+  DWORD cb = any->curr + size > any->end ? any->end - any->curr : size;
+
   if (flag_process) {
-#ifdef _WIN32
-    DWORD bytesRead = 0;
-    if (any->curr + size > any->end) {
-      ReadProcessMemory(any->id, any->curr, buffer, any->end - any->curr,
-                        &bytesRead);
-    } else {
-      ReadProcessMemory(any->id, any->curr, buffer, size, &bytesRead);
+    if (!ReadProcessMemory(any->id, any->curr, buffer, cb, &bytesRead)) {
+      return -1;
     }
-    any->curr += bytesRead;
-    return bytesRead;
-#else
-    u32 ct;
-    struct iovec local[1];
-    local[0].iov_base = buffer;
-    local[0].iov_len = size;
-    struct iovec remote[1];
-    remote[0].iov_base = any->curr;
-    if (any->curr + size > any->end) {
-      remote[0].iov_len = any->end - any->curr;
-    } else {
-      remote[0].iov_len = size;
-    }
-    ct = process_vm_readv(any->id, local, 1, remote, 1, 0);
-    any->curr += ct;
-    return ct;
-#endif
   } else {
-    /* we should not touch bytes outside the boundry. in order to do that, our
-     * target pointer should always have the same value as file offset */
-#ifdef _WIN32
-    DWORD bytesRead = -1;
-    if (any->curr + size > any->end) {
-      ReadFile(any->id, buffer, any->end - any->curr, &bytesRead, NULL);
-    } else {
-      ReadFile(any->id, buffer, size, &bytesRead, NULL);
+    if (!ReadFile(any->id, buffer, cb, &bytesRead, NULL)) {
+      return -1;
     }
-    any->curr += bytesRead;
-    return bytesRead;
-#else
-    u32 ct;
-    if (any->curr + size > any->end) {
-      ct = read(any->id, buffer, any->end - any->curr);
-    } else {
-      ct = read(any->id, buffer, size);
-    }
-    any->curr += ct;
-    return ct;
-#endif
   }
+
+  /* we should never touch bytes outside the boundry.
+   * our io pointer should always have the same value as file offset */
+  any->curr += bytesRead;
+  return bytesRead;
+
+#else
+
+  u32 ct = 0;
+  u32 to_read = any->curr + size > any->end ? any->end - any->curr : size;
+
+  if (flag_process) {
+
+    struct iovec local = {.iov_base = buffer, .iov_len = size};
+    struct iovec remote = {.iov_base = any->curr, .iov_len = to_read};
+
+    ct = process_vm_readv(any->id, &local, 1, &remote, 1, 0);
+    if (ct == -1) {
+      return -1;
+    }
+  } else {
+    ct = read(any->id, buffer, to_read);
+    if (ct == -1) {
+      return -1;
+    }
+  }
+
+  /* we should never touch bytes outside the boundry.
+   * our io pointer should always have the same value as file offset */
+  any->curr += ct;
+  return ct;
+
+#endif
 }
 
 // abstract io layer of closing
-void close_target(target *any) {
+void close_object(ioobj *any) {
   /* for windows, any process/file is associated with a handle; for linux it's a
    * file descriptor */
 #ifdef _WIN32
+
   CloseHandle(any->id);
 #else
+
   close(any->id);
 #endif
   free(any);
 }
 
-// abstract io layer of seeking
-u64 seek_target(target *any, i64 offset) {
+// abstract io layer of seeking, return -1 on failure
+u64 seek_object(ioobj *any, i64 offset) {
   i64 pos = 0;
   pos = offset >= 0 ? any->begin + offset : any->end + offset;
-  /* we restrict target pointer in [any->begin, any->end), positive offsets are
-   * for seeking from the beginning, negative ones for seeking from the end */
+
+  /* we restrict target pointer in (any->begin, any->end)
+   * negative offsets for seeking from the end */
   if (pos > any->end) {
     pos = any->end;
   } else if (pos < any->begin) {
@@ -298,21 +328,31 @@ u64 seek_target(target *any, i64 offset) {
      * SetFilePointerEx, for linux it's lseek64 (define __USE_FILE_OFFSET64
      * before including unistd.h) */
 #ifdef _WIN32
-    LARGE_INTEGER newPos, newCurr;
-    newPos.QuadPart = pos;
-    SetFilePointerEx(any->id, newPos, &newCurr, FILE_BEGIN);
-    any->curr = newCurr.QuadPart;
+
+    LARGE_INTEGER position, newPosition;
+    position.QuadPart = pos;
+    if (!SetFilePointerEx(any->id, position, &newPosition, FILE_BEGIN)) {
+      return -1;
+    }
+    any->curr = newPosition.QuadPart;
+
 #else
+
     i64 curr = lseek64(any->id, pos, SEEK_SET);
+    if (curr == -1) {
+      return -1;
+    }
     any->curr = curr;
+
 #endif
   }
 
   return any->curr;
 }
 
-// 8-byte group matching
+// 8-byte group matching, if there's a match, return 1
 u8 match(u8 *buffer, u64 vbase, i32 i, u8 *pattern, u8 *mask, i32 len) {
+
   i32 j = 0;
   while (j <= len - 8) {
     if ((*(u64 *)(buffer + i + j) & *(u64 *)(mask + j)) !=
@@ -324,7 +364,7 @@ u8 match(u8 *buffer, u64 vbase, i32 i, u8 *pattern, u8 *mask, i32 len) {
 
   if (j < len) {
     /* len - j bytes left not grouped, before comparison we should discard the
-     * top 8 - (len - j) ones by byte shifting (multiply the shift by 8) */
+     * top 8 - (len - j) bytes by byte shifting (multiply the shift by 8) */
     if ((*(u64 *)(buffer + i + j) & *(u64 *)(mask + j))
             << ((8 - len + j) << 3) ==
         (*(u64 *)(pattern + j)) << ((8 - len + j) << 3)) {
@@ -363,18 +403,19 @@ void search(u8 *buffer, u64 vbase, i32 size, u8 *pattern, u8 *mask, i32 len) {
   if (flag_reverse) {
     // reversed search
     for (j = len - 1; j >= 0; j--) {
-      // preprocessing
+
       if (mask[j] == 0xff) {
         delta[pattern[j]] = j + 1;
       } else {
+
         M = ~mask[j], m = 1;
         while ((m | M) != M) {
           m <<= 1;
         }
-        /* number k has M as the upper bound and m the lower bound, which should
-         * cover all possible wildcard bit specified by mask[j], since ~mask[j]
-         * | pattern[j] is always zero, characters we should update are such
-         * that c = k | pattern[j] when k | M equals to M */
+
+        /* k in [m, M] covers all possible wildcard bit specified by mask[j]
+         * since ~mask[j] | pattern[j] is always zero, characters we should
+         * update are such that c = k | pattern[j] when k | M equals to M */
         for (k = 0; k <= M; k += m) {
           if ((k | M) == M) {
             /* in reversed searching delta[c] is set to the distance to position
@@ -386,7 +427,8 @@ void search(u8 *buffer, u64 vbase, i32 size, u8 *pattern, u8 *mask, i32 len) {
     }
 
     i = size - len;
-    if (flag_limit) {
+    if (flag_quick) {
+
       // quick search, stop when limit is meet
       while (limit && i >= 0) {
         limit -= match(buffer, vbase, i, pattern, mask, len);
@@ -395,6 +437,7 @@ void search(u8 *buffer, u64 vbase, i32 size, u8 *pattern, u8 *mask, i32 len) {
         }
       }
     } else {
+
       while (i >= 0) {
         match(buffer, vbase, i, pattern, mask, len);
         if (i > 0) {
@@ -403,14 +446,18 @@ void search(u8 *buffer, u64 vbase, i32 size, u8 *pattern, u8 *mask, i32 len) {
       }
     }
   } else {
+
     for (j = 0; j < len; j++) {
+
       if (mask[j] == 0xff) {
         delta[pattern[j]] = len - j;
       } else {
+
         M = ~mask[j], m = 1;
         while ((m | M) != M) {
           m <<= 1;
         }
+
         for (k = 0; k <= M; k += m) {
           if ((k | M) == M) {
             // delta[c] is set to the distance to position len
@@ -421,7 +468,8 @@ void search(u8 *buffer, u64 vbase, i32 size, u8 *pattern, u8 *mask, i32 len) {
     }
 
     i = 0;
-    if (flag_limit) {
+    if (flag_quick) {
+
       // quick search, stop when limit is meet
       while (limit && size - i >= len) {
         limit -= match(buffer, vbase, i, pattern, mask, len);
@@ -430,6 +478,7 @@ void search(u8 *buffer, u64 vbase, i32 size, u8 *pattern, u8 *mask, i32 len) {
         }
       }
     } else {
+
       while (size - i >= len) {
         match(buffer, vbase, i, pattern, mask, len);
         if (i + len < size) {
@@ -441,20 +490,20 @@ void search(u8 *buffer, u64 vbase, i32 size, u8 *pattern, u8 *mask, i32 len) {
 }
 
 // search the target block by block
-void search_target(target *any, u8 *pattern, u8 *mask, i32 len) {
-  u64 to_read = any->end - any->begin, readed = 0;
+void search_object(ioobj *any, u8 *pattern, u8 *mask, i32 len) {
+  u64 to_read = any->end - any->begin, already_read = 0;
   if (to_read < len) {
     return;
   }
 
   i32 size, ct;
   if (flag_process) {
-    size = BGREP_VIRT_BLK_SIZE;
+    size = VBLOCK_SIZE;
   } else {
-    size = BGREP_PHY_BLK_SIZE;
+    size = PBLOCK_SIZE;
   }
 
-  // size should be at least twice the length of our pattern
+  // buffer should be at least twice the length of pattern
   while (size < (len << 1)) {
     size <<= 1;
     if (size == 0) {
@@ -468,48 +517,30 @@ void search_target(target *any, u8 *pattern, u8 *mask, i32 len) {
   }
 
   if (flag_reverse) {
-    seek_target(any, -size);
-    ct = read_target(any, buffer, size);
-    if (ct < to_read && ct < size) {
-      die("inconsistency during searching");
+
+    seek_object(any, -size); // any->curr could be 0 if size is too large
+    ct = read_object(any, buffer, size);
+
+    /* if some bytes became invalid in (any->begin, any->end), we stop the
+     * algorithm immediately */
+    if (ct != to_read || ct != size) {
+      die("unexpected io during searching");
     }
 
     search(buffer, any->curr - ct, min(to_read, size), pattern, mask, len);
 
-    if (size < to_read) {
+    // search the buffer until already_read equals to any->end - any->begin
+    if (ct == size) {
+
       while (limit) {
         to_read -= ct;
-        readed += ct;
+        already_read += ct;
 
-        seek_target(any, -(readed + size - (len - 1)));
-        ct = read_target(any, buffer, size);
-
-        if (ct >= to_read) {
-          search(buffer, any->curr - ct, to_read + len - 1, pattern, mask, len);
-          break;
-        } else if (ct == size) {
-          search(buffer, any->curr - ct, size, pattern, mask, len);
-        } else {
-          die("inconsistency during searching");
-        }
-      }
-    }
-  } else {
-    seek_target(any, 0LL);
-    ct = read_target(any, buffer, size);
-    if (ct < to_read && ct < size) {
-      die("inconsistency during searching");
-    }
-
-    search(buffer, any->curr - ct, min(to_read, size), pattern, mask, len);
-
-    if (size < to_read) {
-      while (limit) {
-        to_read -= ct;
-        readed += ct;
-
-        memmove(buffer, buffer + size - (len - 1), len - 1);
-        ct = read_target(any, buffer + len - 1, size - (len - 1));
+        /* first len - 1 bytes from the last buffer need another check
+         * any->curr could be 0 though */
+        seek_object(any, -(already_read + size - (len - 1)));
+        // actually we only consume at most read - (len - 1) bytes
+        ct = read_object(any, buffer, size) - (len - 1);
 
         if (ct >= to_read) {
           search(buffer, any->curr - ct, to_read + len - 1, pattern, mask, len);
@@ -517,7 +548,44 @@ void search_target(target *any, u8 *pattern, u8 *mask, i32 len) {
         } else if (ct == size - (len - 1)) {
           search(buffer, any->curr - ct, size, pattern, mask, len);
         } else {
-          die("inconsistency during searching");
+          die("unexpected io during searching");
+        }
+      }
+    }
+  } else {
+
+    seek_object(any, 0LL);
+    ct = read_object(any, buffer, size);
+
+    /* if some bytes became invalid in (any->begin, any->end), we stop the
+     * algorithm immediately */
+    if (ct != to_read || ct != size) {
+      die("unexpected io during searching");
+    }
+
+    search(buffer, any->curr - ct, min(to_read, size), pattern, mask, len);
+
+    // search the buffer until all bytes is consumed
+    if (ct == size) {
+
+      while (limit) {
+        to_read -= ct;
+        already_read += ct;
+
+        /* there could be a match if the last len - 1 bytes and the first byte
+         * of new buffer meet, so we only read size - (len - 1) bytes during
+         * iteration */
+        memmove(buffer, buffer + size - (len - 1), len - 1);
+        ct = read_object(any, buffer + len - 1, size - (len - 1));
+
+        // in this case all bytes are consumed, no need to step further
+        if (ct >= to_read) {
+          search(buffer, any->curr - ct, to_read + len - 1, pattern, mask, len);
+          break;
+        } else if (ct == size - (len - 1)) {
+          search(buffer, any->curr - ct, size, pattern, mask, len);
+        } else {
+          die("unexpected io during searching");
         }
       }
     }
@@ -528,124 +596,156 @@ void search_target(target *any, u8 *pattern, u8 *mask, i32 len) {
 
 int main(int argc, char **argv) {
   if (argc < 3) {
-    usage(argv);
+    usage();
     return 1;
   }
 
-  option *k;
-  u32 i, j;
+  char *hex_str;
+  char *object_str;
+  u32 i = 0, j, hex_len = 0;
+  option *opt;
 
-  i = 0;
+  // parse options
   while (++i < argc) {
-    if (argv[i][0] == '-') {
-      if (argv[i][1] == '-') {
-        for (k = &opts; k->str; k++) {
-          if (!strcmp(argv[i] + 2, k->str)) {
-            break;
+    switch (strspn(argv[i], "-")) {
+
+    case 2: // long options
+      for (opt = &opts; opt->str; opt++) {
+        if (!strcmp(argv[i] + 2, opt->str)) {
+
+          if (opt->flag != NULL) {
+            // set flag for a long option
+            *(opt->flag) = 1;
           }
-        }
-        if (!k->str) {
-          usage(argv);
-        }
-        if (k->flag != NULL) {
-          *(k->flag) = 1;
-        }
-        if (k->param != NULL) {
-          *(k->param) = argv[++i];
-        }
-      } else {
-        // short opts
-        for (j = 1; argv[i][j]; j++) {
-          for (k = &opts; k->str; k++) {
-            if (argv[i][j] == k->abbr[0]) {
-              if (k->flag != NULL) {
-                *(k->flag) = 1;
-              }
-              if (k->param != NULL) {
-                if (argv[i][j + 1]) {
-                  *(k->param) = argv[i] + j + 1;
-                } else if (i + 1 < argc) {
-                  *(k->param) = argv[i + 1];
-                } else {
-                  usage(argv);
-                }
-              }
+
+          if (opt->param != NULL) {
+            // get param for a long option
+            if (i + 1 < argc) {
+              *(opt->param) = argv[++i];
+            } else {
+              usage();
             }
           }
-          if (!k->str) {
-            usage(argv);
+          break;
+        }
+      }
+
+      if (!opt->str) {
+        usage();
+      }
+      break;
+
+    case 1: // short options
+      // iterate over each character(short option)
+      for (j = 1; argv[i][j]; j++) {
+
+        for (opt = &opts; opt->str; opt++) {
+          if (argv[i][j] == opt->abbr[0]) {
+
+            if (opt->flag != NULL) {
+              // set flag for a short option
+              *(opt->flag) = 1;
+            }
+
+            if (opt->param != NULL) {
+              if (argv[i][j + 1]) {
+                // any characters after this one should be treated as param
+                *(opt->param) = argv[i] + j + 1;
+              } else if (i + 1 < argc) {
+                *(opt->param) = argv[++i];
+              } else {
+                usage();
+              }
+              break;
+            }
           }
         }
-      }
-    } else if (hex_str == NULL) {
-      hex_str = argv[i];
-      for (j = 0; hex_str[j]; j++) {
-        if (hex_str[j] == '?' || hex_str[j] == ' ') {
-          continue;
-        } else if (hex_str[j] >= '0' && hex_str[j] <= '9') {
-          continue;
-        } else if (hex_str[j] >= 'a' && hex_str[j] <= 'f') {
-          continue;
-        } else if (hex_str[j] >= 'A' && hex_str[j] <= 'F') {
-          continue;
+
+        if (!opt->str) {
+          usage();
         }
-        die("invalid hex string");
       }
-      if (j % 2 == 1 || j == 0) {
-        die("invalid/empty hex string");
+      break;
+
+    case 0: // other params
+      if (hex_str == NULL) {
+
+        hex_str = argv[i];
+        for (j = 0; hex_str[j]; j++) {
+          if ((hex_str[j] >= '0' && hex_str[j] <= '9') ||
+              (hex_str[j] >= 'a' && hex_str[j] <= 'f') ||
+              (hex_str[j] >= 'A' && hex_str[j] <= 'F') || hex_str[j] == '?') {
+            hex_len++;
+          } else if (hex_str[j] != ' ') {
+            die("invalid hex string");
+          }
+        }
+
+        if (hex_len % 2 || !hex_len) {
+          die("invalid/empty hex string");
+        }
+
+        // two hex character for a 8-bit
+        hex_len >>= 1;
+      } else if (object_str == NULL) {
+        object_str = argv[i];
+      } else {
+        usage();
       }
-    } else if (target_str == NULL) {
-      target_str = argv[i];
-    } else {
-      usage(argv);
+
+    default:
+      usage();
     }
   }
 
-  if (hex_str == NULL || target_str == NULL) {
-    usage(argv);
+  if (hex_str == NULL || object_str == NULL) {
+    usage();
   }
 
-  if (flag_limit) {
+  if (flag_quick) {
     limit = atoi(limit_str);
     if (limit <= 0) {
       die("invalid value %s for search limit", limit_str);
     }
   }
 
-  u32 buffer_len = (strlen(hex_str) >> 1) + 1;
-  u8 *pattern = (u8 *)memset(malloc(buffer_len), 0, buffer_len);
-  u8 *mask = (u8 *)memset(malloc(buffer_len), 0, buffer_len);
+  u8 *pattern = (u8 *)memset(malloc(hex_len), 0, hex_len);
+  u8 *mask = (u8 *)memset(malloc(hex_len), 0, hex_len);
   if (pattern == NULL || mask == NULL) {
     die("error allocating pattern buffer");
   }
 
-  u32 len = 0;
+  // convert ascii string to hex pattern and mask
   u8 *h = (u8 *)hex_str, x;
-  while (*h && len < buffer_len) {
+  for (j = 0; j < hex_len && *h; j++) {
     if (*h == ' ') {
       h++;
       continue;
     }
-    // ascii to hex
-    x = *h++;
+
+    x = *h++; // the higher 4 bit
     if (x != '?') {
       x = (x & 0xf) + (((char)(x << 1) >> 7) & 0x9);
-      pattern[len] |= x << 4;
-      mask[len] |= 0xf0;
+      pattern[j] |= x << 4;
+      mask[j] |= 0xf0;
     }
-    x = *h++;
+
+    x = *h++; // the lower 4 bit
     if (x != '?') {
       x = (x & 0xf) + (((char)(x << 1) >> 7) & 0x9);
-      pattern[len] |= x;
-      mask[len] |= 0xf;
+      pattern[j] |= x;
+      mask[j] |= 0xf;
     }
-    len++;
   }
 
-  target *any = open_target(target_str);
-  search_target(any, pattern, mask, len);
-  close_target(any);
+  ioobj *any = open_object(object_str);
+  if (any == NULL) {
+    die("%s is not something readable", object_str);
+  } else {
+    search_object(any, pattern, mask, hex_len);
+  }
 
+  close_object(any);
   free(pattern);
   free(mask);
   return 0;

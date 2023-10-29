@@ -10,9 +10,9 @@ grammar to simplify the code.
 
 Feel free to modify, branch, fork, improve. Re-licenses as BSD.
 
-usage: bgrep -[prv] [-l count] <hex> <target>
+usage: bgrep -[prv] [-l count] <hex> <object>
 options:
-  -p, --process: <target> is pid instead of file path
+  -p, --process: <object> is pid instead of file path
   -r, --reverse: reversed search
   -v, --verbose: show both address and binary
   -l, --limit [count]: max number of results to show
