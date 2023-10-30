@@ -1,0 +1,10 @@
+bgrep
+
+*.a
+*.so
+*.o
+*.lib
+*.dll
+*.exe
+
+.vscode/*

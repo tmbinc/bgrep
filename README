@@ -1,4 +1,6 @@
-This is an binary grep program forked from tmbinc/bgrep.
+bgrep - grep binary signatures
+
+forked from tmbinc/bgrep
 
 I was trying to find specific binary signatures in a program at RUNTIME. But
 sadly the original version of bgrep won't do much help so I decided to modify
@@ -8,18 +10,17 @@ My bgrep now supports searching both files and processes, using a modified
 Sunday algorithm with masked patterns. I also removed some rarely-used pattern
 grammar to simplify the code.
 
-Feel free to modify, branch, fork, improve. Re-licenses as BSD.
+Feel free to modify, branch, fork and improve.
 
-usage: bgrep -[prv] [-l count] <hex> <object>
+usage: bgrep -[pv] [-l count] <hex> <object>
 options:
   -p, --process: <object> is pid instead of file path
-  -r, --reverse: reversed search
   -v, --verbose: show both address and binary
   -l, --limit [count]: max number of results to show
 
-The hex string is made up of 0-9, a-f, A-F and wildcard ?. Spaces are
-allowed to avoid mistakes.
+The hex string is made up of 0-9, a-f, A-F and wildcard ?. Spaces inserted into
+the hex string will be omitted.
 
 an example to find x86 function prefixes in process 9999:
 
-bgrep --process --limit 10 "5589e5??" 9999
+bgrep --process --limit 10 "55 89 e5 ??" 9999
