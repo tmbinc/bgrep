@@ -47,20 +47,12 @@ typedef long long i64;
 #define BGREP_VERSION "0.3"
 #define PBLOCK_SIZE 512
 #define VBLOCK_SIZE 4096
-#define VMEM_BEGIN 0LL
-#define VMEM_END (1LL << 63)
+#define VMEM_BEGIN 0ULL
+#define VMEM_END ((1ULL << 63) - 1)
 
 #ifdef _WIN32
 
 #include <Windows.h>
-
-// universal io object, including an id number and 3 pointers
-typedef struct ioobj {
-  HANDLE id;
-  u64 begin;
-  u64 end;
-  u64 curr;
-} ioobj;
 
 #else
 
@@ -73,15 +65,21 @@ typedef struct ioobj {
 #include <sys/types.h>
 #include <sys/uio.h>
 
+#endif
+
 // universal io object, including an id number and 3 pointers
 typedef struct ioobj {
+
+#ifdef _WIN32
+  HANDLE id;
+#else
   int id;
+#endif
+
   u64 begin;
   u64 end;
   u64 curr;
 } ioobj;
-
-#endif
 
 u8 flag_process;
 u8 flag_reverse;
@@ -185,7 +183,7 @@ ioobj *open_object(char *repr) {
 
     // for files we set the search boundry to (0, size of file)
     LARGE_INTEGER fileSize;
-    file->begin = file->curr = 0LL;
+    file->begin = file->curr = 0ULL;
     if (!GetFileSizeEx(file->id, &fileSize)) {
       return -1;
     }
@@ -198,24 +196,37 @@ ioobj *open_object(char *repr) {
 
   if (flag_process) {
     ioobj *process = (ioobj *)malloc(sizeof(ioobj));
+    char buffer_path[32], buffer_value[40];
 
     /* for linux processes we can't get process information with APIs unless we
      * use ptrace to debug it
      * to get process's memory map we have to parse /proc/<pid>/maps */
     process->id = atoi(repr);
-    sprintf(map_file, "/proc/%lld/maps", process->id);
-    int fd_maps = open(map_file, O_RDONLY);
-    if (fd_maps == -1) {
+    sprintf(buffer_path, "/proc/%u/maps", process->id);
+    FILE *fp = fopen(buffer_path, "r");
+    if (fp == NULL) {
       return -1;
     }
 
-    char *map_file[32], buffer_line[256];
-    // search process map and set io object to code section
-    /* todo */
-    process->begin = process->curr = 0;
-    process->end = 0;
+    char c, r, w, x;
+    u64 begin, end;
 
-    close(fd_maps);
+    while (fgets(buffer_value, 40, fp) != NULL) {
+
+      // search process map and set io object to the first code section
+      sscanf(buffer_value, "%llu-%llu %c%c%c", &begin, &end, &r, &w, &x);
+
+      if (x != '-') {
+        process->begin = process->curr = begin;
+        process->end = end;
+        break;
+      }
+
+      while ((c = getc(fp)) != EOF && c != '\n')
+        ;
+    }
+
+    fclose(fp);
     return process;
 
   } else {
@@ -295,15 +306,15 @@ u32 read_object(ioobj *any, u8 *buffer, u32 size) {
 
 // abstract io layer of closing
 void close_object(ioobj *any) {
-  /* for windows, any process/file is associated with a handle; for linux it's a
-   * file descriptor */
-#ifdef _WIN32
 
+  /* for windows, any process/file is associated with a handle; for linux it's
+   * a file descriptor */
+#ifdef _WIN32
   CloseHandle(any->id);
 #else
-
   close(any->id);
 #endif
+
   free(any);
 }
 
@@ -324,26 +335,23 @@ u64 seek_object(ioobj *any, i64 offset) {
     // for processes, we just set the target pointer
     any->curr = pos;
   } else {
-    /* we make our target pointer track the 64-bit file offset, for windows it's
-     * SetFilePointerEx, for linux it's lseek64 (define __USE_FILE_OFFSET64
-     * before including unistd.h) */
-#ifdef _WIN32
 
+    /* we make our target pointer track the 64-bit file offset, for windows
+     * it's SetFilePointerEx, for linux it's lseek64 (define
+     * __USE_FILE_OFFSET64 before including unistd.h) */
+#ifdef _WIN32
     LARGE_INTEGER position, newPosition;
     position.QuadPart = pos;
     if (!SetFilePointerEx(any->id, position, &newPosition, FILE_BEGIN)) {
       return -1;
     }
     any->curr = newPosition.QuadPart;
-
 #else
-
     i64 curr = lseek64(any->id, pos, SEEK_SET);
     if (curr == -1) {
       return -1;
     }
     any->curr = curr;
-
 #endif
   }
 
@@ -418,8 +426,8 @@ void search(u8 *buffer, u64 vbase, i32 size, u8 *pattern, u8 *mask, i32 len) {
          * update are such that c = k | pattern[j] when k | M equals to M */
         for (k = 0; k <= M; k += m) {
           if ((k | M) == M) {
-            /* in reversed searching delta[c] is set to the distance to position
-             * -1 */
+            /* in reversed searching delta[c] is set to the distance to
+             * position -1 */
             delta[k | pattern[j]] = j + 1;
           }
         }
