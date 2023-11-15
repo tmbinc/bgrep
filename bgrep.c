@@ -162,7 +162,7 @@ data *open_object(char *repr) {
       /* Iteration stops upon the first executable section. However sometimes it
        * may not be .text of the main program, especially for some handcrafted
        * PEs, which requires further research. */
-      if (mbi.State == MEM_COMMIT && mbi.State == MEM_IMAGE &&
+      if (mbi.State == MEM_COMMIT && mbi.Type == MEM_IMAGE &&
           (mbi.Protect == PAGE_EXECUTE_READ ||
            mbi.Protect == PAGE_EXECUTE_READWRITE)) {
         process->begin = process->curr = (u64)mbi.BaseAddress;
@@ -337,7 +337,7 @@ u8 match(u8 *buffer, u64 vbase, u32 i, u8 *pattern, u8 *mask, i32 len) {
   if (j < len) {
     /* len - j bytes left not grouped
      * Before comparison we should discard the top W - (len - j) bytes. */
-    u64 x = (1 << ((len - j) << 3)) - 1;
+    u64 x = (1ULL << ((len - j) << 3)) - 1;
     if ((*(u64 *)(start + j) & *(u64 *)(mask + j) & x) ==
         (*(u64 *)(pattern + j) & x)) {
       j += sizeof(u64);
