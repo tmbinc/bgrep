@@ -225,7 +225,7 @@ data *open_object(char *repr) {
     while (fgets(buffer_value, 40, fp) != NULL) {
 
       /* search process map and align IO object to the first code section */
-      sscanf(buffer_value, "%llu-%llu %c%c%c", &begin, &end, &r, &w, &x);
+      sscanf(buffer_value, "%llx-%llx %c%c%c", &begin, &end, &r, &w, &x);
 
       if (r == 'r' && x == 'x') {
         process->begin = process->curr = begin;
@@ -266,7 +266,7 @@ data *open_object(char *repr) {
 }
 
 /* abstract IO layer of reading, returns -1 on error */
-i32 read_object(data *any, u8 *buffer, u32 size) {
+i32 read_object(data *any, u8 *buffer, i32 size) {
 
 #ifdef _WIN32
 
@@ -304,7 +304,7 @@ i32 read_object(data *any, u8 *buffer, u32 size) {
 
   /* set IO pointer to track file offset */
   any->curr += ct;
-  return (u32)ct;
+  return (i32)ct;
 }
 
 /* abstract IO layer of closing */
@@ -424,7 +424,7 @@ void search_object(data *any, u8 *pattern, u8 *mask, i32 len) {
   /* Buffer should be at least twice the length as pattern. */
   while (size < (len << 1)) {
     size <<= 1;
-    if (size == 0) {
+    if (size <= 0) {
       die("error allocating search buffer");
     }
   }
