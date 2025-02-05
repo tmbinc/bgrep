@@ -50,6 +50,7 @@
 #endif
 
 int bytes_before = 0, bytes_after = 0;
+char **original_argv;
 
 void die(const char* msg, ...);
 
@@ -251,12 +252,12 @@ void die(const char* msg, ...)
 	exit(1);
 }
 
-void usage(char** argv)
+void usage()
 {
 	fprintf(stderr, "bgrep version: %s\n", BGREP_VERSION);
 	fprintf(stderr, "usage:\n");
-	fprintf(stderr, "	%s [-r] [-B bytes] [-A bytes] [-C bytes] <hex> [<path> [...]]\n", *argv);
-	fprintf(stderr, "	%s [-r] -f <pattern> [-m <mask>] [<path> [...]]\n", *argv);
+	fprintf(stderr, "	%s [-r] [-B bytes] [-A bytes] [-C bytes] <hex> [<path> [...]]\n", *original_argv);
+	fprintf(stderr, "	%s [-r] -f <pattern> [-m <mask>] [<path> [...]]\n", *original_argv);
 	exit(1);
 }
 
@@ -288,7 +289,7 @@ void parse_opts(int argc, char** argv, Options* options)
 				options->recurse = true;
 				break;
 			default:
-				usage(argv);
+				usage();
 		}
 	}
 
@@ -304,11 +305,7 @@ int main(int argc, char **argv)
 	unsigned char *value, *mask;
 	int len = 0;
 
-	if (argc < 2)
-	{
-		usage(argv);
-		return 1;
-	}
+	original_argv = argv;
 
 	parse_opts(argc, argv, &options);
 	argv += optind; /* advance the pointer to the first non-opt arg */
@@ -384,8 +381,10 @@ int main(int argc, char **argv)
 			for (int i = 0; i < len; i++)
 				value[i] &= mask[i];
 		}
-	}
-	else
+	} else if (argc == 0) {
+		// a pattern is required.
+		usage();
+	} else
 	{
 		char *h = *argv++;
 		argc--;
