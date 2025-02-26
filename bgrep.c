@@ -193,6 +193,7 @@ typedef struct Options {
 	char* pattern_path;
 	char* mask_path;
 	bool recurse;
+	bool reverse;
 } Options;
 
 void recurse(const char *path, const unsigned char *value, const unsigned char *mask, int len, const Options* options)
@@ -252,13 +253,32 @@ void die(const char* msg, ...)
 	exit(1);
 }
 
-void usage()
+void version()
 {
 	fprintf(stderr, "bgrep version: %s\n", BGREP_VERSION);
+}
+
+void usage(bool extended)
+{
+	version();
 	fprintf(stderr, "usage:\n");
-	fprintf(stderr, "	%s [-r] [-B bytes] [-A bytes] [-C bytes] <hex> [<path> [...]]\n", *original_argv);
-	fprintf(stderr, "	%s [-r] -f <pattern> [-m <mask>] [<path> [...]]\n", *original_argv);
-	exit(1);
+	fprintf(stderr, "\t%s [-rehv] [-B bytes] [-A bytes] [-C bytes] <hex> [<path> [...]]\n", *original_argv);
+	fprintf(stderr, "\t%s [-rehv] -f <pattern> [-m <mask>] [<path> [...]]\n", *original_argv);
+	if (extended)
+	{
+		fprintf(stderr, "options:\n");
+		fprintf(stderr, "\t-r\trecurse into directories\n");
+		fprintf(stderr, "\t-e\treverse byte pattern\n");
+		fprintf(stderr, "\t-B\tprint number of bytes before result\n");
+		fprintf(stderr, "\t-A\tprint number of bytes after result\n");
+		fprintf(stderr, "\t-C\tprint number of bytes before and after result\n");
+		fprintf(stderr, "\t-f\tpath to pattern file\n");
+		fprintf(stderr, "\t-m\tpath to mask file\n");
+		fprintf(stderr, "\t-h\tprint this help\n");
+		fprintf(stderr, "\t-v\tprint version\n");
+	}
+	else
+		exit(1);
 }
 
 void parse_opts(int argc, char** argv, Options* options)
@@ -266,7 +286,7 @@ void parse_opts(int argc, char** argv, Options* options)
 	int c;
 	char* pattern_path, * mask_path;
 
-	while ((c = getopt(argc, argv, "A:B:C:f:m:r")) != -1)
+	while ((c = getopt(argc, argv, "A:B:C:f:m:rehv")) != -1)
 	{
 		switch (c)
 		{
@@ -288,8 +308,19 @@ void parse_opts(int argc, char** argv, Options* options)
 			case 'r':
 				options->recurse = true;
 				break;
+			case 'e':
+				options->reverse = true;
+				break;
+			case 'v':
+				version();
+				exit(0);
+				break;
+			case 'h':
+				usage(true);
+				exit(0);
+				break;
 			default:
-				usage();
+				usage(false);
 		}
 	}
 
@@ -383,7 +414,7 @@ int main(int argc, char **argv)
 		}
 	} else if (argc == 0) {
 		// a pattern is required.
-		usage();
+		usage(false);
 	} else
 	{
 		char *h = *argv++;
@@ -473,6 +504,21 @@ int main(int argc, char **argv)
 			fprintf(stderr, "invalid/empty search string\n");
 			free(value); free(mask);
 			return 2;
+		}
+	}
+
+	if (options.reverse && len > 1)
+	{
+		for (int i = 0; i < len / 2; ++i)
+		{
+			unsigned char tmp;
+			tmp = value[i];
+			value[i] = value[len - i - 1];
+			value[len - i - 1] = tmp;
+
+			tmp = mask[i];
+			mask[i] = mask[len - i - 1];
+			mask[len - i - 1] = tmp;
 		}
 	}
 
