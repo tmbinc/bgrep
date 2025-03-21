@@ -25,7 +25,6 @@
 // or implied, of the copyright holder.
 //
 
-#include <err.h>
 #include <errno.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -52,6 +51,7 @@
 int bytes_before = 0, bytes_after = 0;
 char **original_argv;
 
+void err(int eval, const char *msg, ...);
 void die(const char* msg, ...);
 
 void print_char(unsigned char c)
@@ -240,6 +240,21 @@ void recurse(const char *path, const unsigned char *value, const unsigned char *
 	}
 
 	closedir(dir);
+}
+
+void err(int eval, const char *msg, ...)
+{
+	va_list ap;
+	va_start(ap, msg);
+	int serrno = errno;
+	fprintf(stderr, "%s: ", "bgrep");
+	if (fmt != NULL) {
+		vfprintf(stderr, msg, ap);
+		fprintf(stderr, ": ");
+	}
+	fprintf(stderr, "%s\n", strerror(serrno));
+	va_end(ap);
+	exit(eval);
 }
 
 void die(const char* msg, ...)
