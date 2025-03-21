@@ -248,7 +248,7 @@ void err(int eval, const char *msg, ...)
 	va_start(ap, msg);
 	int serrno = errno;
 	fprintf(stderr, "%s: ", "bgrep");
-	if (fmt != NULL) {
+	if (msg != NULL) {
 		vfprintf(stderr, msg, ap);
 		fprintf(stderr, ": ");
 	}
