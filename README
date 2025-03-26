@@ -10,8 +10,12 @@ curl -L 'https://github.com/tmbinc/bgrep/raw/master/bgrep.c' | gcc -O2 -x c -o $
 
 usage:
 
-bgrep [-B bytes] [-A bytes] [-C bytes] <hex> [<path> [...]]
+bgrep [-rehv] [-B bytes] [-A bytes] [-C bytes] <hex> [<path> [...]]
 
+-r: recurse into directories
+-e: reverse hex input
 -B: bytes_before
 -A: bytes_after
 -C: bytes_before and bytes_after
+-h: print help
+-v: print version
