@@ -1,0 +1,89 @@
+.TH BGREP 1 "2026-06-09" "bgrep 0.3" "User Commands"
+.SH NAME
+bgrep \- a binary grep
+.SH SYNOPSIS
+.B bgrep
+[\fB\-r\fR] [\fB\-B\fR bytes] [\fB\-A\fR bytes] [\fB\-C\fR bytes] <hex> [<path> [...]]
+.br
+.B bgrep
+[\fB\-r\fR] \fB\-f\fR <pattern path> [\fB\-m\fR <mask path>] [<path> [...]]
+.SH DESCRIPTION
+A grep(1), but for binary files; searches for hex patterns.
+.PP
+When no path is given,
+.B bgrep
+reads from standard input.
+.PP
+The pattern is given as
+.I <hex>
+with two digits per byte (no
+.B 0x
+prefix); spaces between bytes are ignored and the digits are case-insensitive.
+.PP
+A pattern containing
+.B ??
+is a wildcard that matches any value. Text may be embedded by quoting it
+(for example
+.BR \(dqABC\(dq ),
+with backslash as the escape character.
+.PP
+Alternatively, a file pattern and mask can be supplied;
+if present, the mask will be ANDed before the comparison.
+.SH OPTIONS
+.TP
+.BR \-B " <bytes>"
+print <bytes> of context before each match
+.TP
+.BR \-A " <bytes>"
+print <bytes> of context after each match
+.TP
+.BR \-C " <bytes>"
+print <bytes> of context before and after a match
+.TP
+.B \-r
+recurse into directories
+.TP
+.BR \-f " <file>"
+read the search pattern (in binary) from a file instead of <hex>
+.TP
+.BR \-m " <file>"
+read a mask file
+.SH OUTPUT
+Each match is printed as the file name, a colon, and the zero-padded
+hexadecimal offset of the match, one per line. Context bytes requested with
+.BR \-A ", " \-B ", or " \-C
+are dumped below it; printable bytes are shown as-is and others as
+.BR \(rsxNN .
+.SH EXIT STATUS
+.B bgrep
+exits 0 when it runs successfully, whether or not a match was found. It exits
+nonzero on error: 2 for an invalid or empty
+.I <hex>
+pattern, and other nonzero codes when a pattern, mask, or input file is missing
+or cannot be read.
+.SH EXAMPLES
+Search a file for the byte sequence 0x42 0x42 0x42:
+.PP
+.RS
+bgrep 424242 firmware.bin
+.RE
+.PP
+Recurse through a directory:
+.PP
+.RS
+bgrep -r 424242 ./images
+.RE
+.SH FILES
+The pattern file read with
+.B \-f
+and the mask file read with
+.B \-m
+are both plain binary files.
+.SH LICENSE
+BSD 2-Clause.
+.SH AUTHOR
+Felix Domke <tmbinc@elitedvb.net>
+.SH COPYRIGHT
+Copyright 2009 Felix Domke. All rights reserved.
+.SH SEE ALSO
+.BR grep (1)
