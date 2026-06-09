@@ -32,13 +32,17 @@ if present, the mask will be ANDed before the comparison.
 .SH OPTIONS
 .TP
 .BR \-B " <bytes>"
-print <bytes> of context before each match
+print <bytes> immediately before the match offset
 .TP
 .BR \-A " <bytes>"
-print <bytes> of context after each match
+print <bytes> starting at the match offset. The window begins at the match, so
+it covers the matched bytes first; to see N bytes following an M-byte pattern,
+use
+.BR \-A " (M+N)."
 .TP
 .BR \-C " <bytes>"
-print <bytes> of context before and after a match
+print <bytes> before the match and <bytes> after it, with the matched bytes
+shown in between
 .TP
 .B \-r
 recurse into directories
@@ -50,10 +54,14 @@ read the search pattern (in binary) from a file instead of <hex>
 read a mask file
 .SH OUTPUT
 Each match is printed as the file name, a colon, and the zero-padded
-hexadecimal offset of the match, one per line. Context bytes requested with
-.BR \-A ", " \-B ", or " \-C
-are dumped below it; printable bytes are shown as-is and others as
+hexadecimal offset of the match, one per line. When context is requested with
+.BR \-A ", " \-B ", or " \-C ,
+the surrounding bytes are dumped on the following line; printable bytes are
+shown as-is and others as
 .BR \(rsxNN .
+See
+.B OPTIONS
+for exactly which bytes each flag includes.
 .SH EXIT STATUS
 .B bgrep
 exits 0 when it runs successfully, whether or not a match was found. It exits
