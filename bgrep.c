@@ -183,7 +183,7 @@ void searchfile(const char *filename, int fd, const unsigned char *value, const 
 			}
 		}
 
-		offset += o;
+		offset += r;
 	}
 
 	free(buf);
