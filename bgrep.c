@@ -51,6 +51,7 @@
 #endif
 
 int bytes_before = 0, bytes_after = 0;
+bool surround_match = false;
 char **original_argv;
 
 void err(int eval, const char *msg, ...);
@@ -86,7 +87,7 @@ int ascii2hex(char c)
  * 	 we have to maintain a window of the bytes before which I am too lazy to do
  * 	 right now.
  */
-void dump_context(int fd, unsigned long long pos)
+void dump_context(int fd, unsigned long long pos, int match_len)
 {
 	off_t save_pos = lseek(fd, 0, SEEK_CUR);
 
@@ -100,7 +101,7 @@ void dump_context(int fd, unsigned long long pos)
 	// Ensure we don't attempt to dump from before the file for a context dump.
 	int before = (pos < (unsigned long long)bytes_before) ? (int)pos : bytes_before;
 	off_t start = pos - before;
-	int bytes_to_read = before + bytes_after;
+	int bytes_to_read = before + bytes_after + (surround_match ? match_len : 0);
 
 	if (lseek(fd, start, SEEK_SET) == (off_t)-1)
 	{
@@ -186,7 +187,7 @@ void searchfile(const char *filename, int fd, const unsigned char *value, const 
 				unsigned long long pos = (unsigned long long)(offset + o - len);
 				printf("%s: %08llx\n", filename, pos);
 				if (bytes_before || bytes_after)
-					dump_context(fd, pos);
+					dump_context(fd, pos, len + 1);
 			}
 		}
 
@@ -304,6 +305,7 @@ void parse_opts(int argc, char **argv, Options *options)
 				break;
 			case 'C':
 				bytes_before = bytes_after = atoi(optarg);
+				surround_match = true;
 				break;
 			case 'f':
 				options->pattern_path = optarg;
