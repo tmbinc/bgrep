@@ -38,6 +38,7 @@
 #include <getopt.h>
 #include <ctype.h>
 #include <stdarg.h>
+#include <limits.h>
 
 #define BGREP_VERSION "0.2"
 
@@ -95,8 +96,10 @@ void dump_context(int fd, unsigned long long pos)
 	}
 
 	char buf[1024];
-	off_t start = pos - bytes_before;
-	int bytes_to_read = bytes_before + bytes_after;
+	// Ensure we don't attempt to dump from before the file for a context dump.
+	int before = (pos < (unsigned long long)bytes_before) ? (int)pos : bytes_before;
+	off_t start = pos - before;
+	int bytes_to_read = before + bytes_after;
 
 	if (lseek(fd, start, SEEK_SET) == (off_t)-1)
 	{
@@ -104,9 +107,9 @@ void dump_context(int fd, unsigned long long pos)
 		return;
 	}
 
-	for (;bytes_to_read;)
+	while (bytes_to_read > 0)
 	{
-		int read_chunk = bytes_to_read > sizeof(buf) ? sizeof(buf) : bytes_to_read;
+		int read_chunk = bytes_to_read > (int)sizeof(buf) ? (int)sizeof(buf) : bytes_to_read;
 		int bytes_read = read(fd, buf, read_chunk);
 
 		if (bytes_read < 0)
@@ -114,6 +117,8 @@ void dump_context(int fd, unsigned long long pos)
 			perror("read");
 			die("Error reading context");
 		}
+		if (bytes_read == 0)
+			break; /* reached end of file before all context was read */
 
 		char* buf_end = buf + bytes_read;
 		char* p = buf;
@@ -123,7 +128,7 @@ void dump_context(int fd, unsigned long long pos)
 			print_char(*p);
 		}
 
-		bytes_to_read -= read_chunk;
+		bytes_to_read -= bytes_read;
 	}
 
 	putchar('\n');
@@ -157,7 +162,6 @@ void searchfile(const char *filename, int fd, const unsigned char *value, const 
 	{
 		int r;
 
-		memmove(buf, buf + bufsize - len, len);
 		r = read(fd, buf + len, bufsize - len);
 
 		if (r < 0)
@@ -168,7 +172,9 @@ void searchfile(const char *filename, int fd, const unsigned char *value, const 
 			break;
 
 		int o, i;
-		for (o = offset ? 0 : len; o < r; ++o)
+		// Ensure to match only in actually read data.
+		int start = offset < (off_t)len ? (int)((off_t)len - offset) : 0;
+		for (o = start; o < r; ++o)
 		{
 			for (i = 0; i <= len; ++i)
 				if ((buf[o + i] & mask[i]) != value[i])
@@ -182,8 +188,10 @@ void searchfile(const char *filename, int fd, const unsigned char *value, const 
 					dump_context(fd, pos);
 			}
 		}
-
+		
 		offset += r;
+
+		memmove(buf, buf + r, len);
 	}
 
 	free(buf);
@@ -279,7 +287,6 @@ void usage()
 void parse_opts(int argc, char** argv, Options* options)
 {
 	int c;
-	char* pattern_path, * mask_path;
 
 	while ((c = getopt(argc, argv, "A:B:C:f:m:r")) != -1)
 	{
@@ -332,6 +339,10 @@ int main(int argc, char **argv)
 			perror(options.pattern_path);
 			exit(3);
 		}
+		if (st.st_size <= 0)
+			die("invalid/empty search string");
+		if (st.st_size > (off_t)INT_MAX)
+			die("pattern too large (%lld bytes)", (long long)st.st_size);
 		size_t maxlen = st.st_size;
 		value = malloc(maxlen);
 		mask = malloc(maxlen);
@@ -347,14 +358,17 @@ int main(int argc, char **argv)
 			exit(3);
 		}
 
-		size_t read = 0;
-		while (read < maxlen) {
-			int n = fread(value + read, 1, maxlen, f);
-			if (feof(f) || ferror(f)) {
-				perror(options.pattern_path);
+		size_t nread = 0;
+		while (nread < maxlen) {
+			size_t n = fread(value + nread, 1, maxlen - nread, f);
+			nread += n;
+			if (n == 0) {
+				if (ferror(f))
+					perror(options.pattern_path);
+				else
+					fprintf(stderr, "%s: unexpected end of file\n", options.pattern_path);
 				exit(3);
 			}
-			read += n;
 		}
 		fclose(f);
 		len = maxlen;
@@ -368,27 +382,34 @@ int main(int argc, char **argv)
 				exit(3);
 			}
 
-			if (st.st_size != len)
+			if (st.st_size != (off_t)len)
 			{
 				fprintf(stderr,
-						"Mask (%zu bytes) must be the same size as pattern (%u bytes)\n",
-						st.st_size,
+						"Mask (%lld bytes) must be the same size as pattern (%d bytes)\n",
+						(long long)st.st_size,
 						len);
 				exit(3);
 			}
 
 			f = fopen(options.mask_path, "r");
-			read = 0;
+			if (!f) {
+				perror(options.mask_path);
+				exit(3);
+			}
+			nread = 0;
 
-			while (read < maxlen)
+			while (nread < maxlen)
 			{
-				int n = fread(mask + read, 1, maxlen, f);
-				if (feof(f) || ferror(f))
+				size_t n = fread(mask + nread, 1, maxlen - nread, f);
+				nread += n;
+				if (n == 0)
 				{
-					perror(options.pattern_path);
+					if (ferror(f))
+						perror(options.mask_path);
+					else
+						fprintf(stderr, "%s: unexpected end of file\n", options.mask_path);
 					exit(3);
 				}
-				read += n;
 			}
 			fclose(f);
 
@@ -417,7 +438,7 @@ int main(int argc, char **argv)
 			die("error allocating memory for search string!\n");
 		}
 
-		while (*h && (parse_mode != MODE_HEX || h[1]) && len < maxlen)
+		while (*h && (parse_mode != MODE_HEX || h[1]) && (size_t)len < maxlen)
 		{
 			int on_quote = (h[0] == '"');
 			int on_esc = (h[0] == '\\');
